@@ -2,9 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
+	"sort"
+	"time"
 
 	"KlineChartQuantGo/internal/client"
+	"github.com/bensema/gotdx/proto"
 )
 
 type exListRequest struct {
@@ -179,4 +183,88 @@ func handleExTable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"table": data})
+}
+
+type exKLineByDateRequest struct {
+	Category  uint8  `json:"category"`
+	Code      string `json:"code"`
+	Period    uint16 `json:"period"`
+	StartDate string `json:"start_date"`
+	EndDate   string `json:"end_date"`
+	Times     uint16 `json:"times"`
+}
+
+func ExKLineRange(category uint8, code string, period uint16, times uint16, startDate, endDate time.Time) ([]proto.ExKLineItem, error) {
+	out := []proto.ExKLineItem{}
+	seen := make(map[string]bool)
+	end := endDate.Add(24 * time.Hour)
+
+	for start := uint32(0); ; start += uint32(klinePageSize) {
+		klines, err := safeExKLine(category, code, period, uint32(start), klinePageSize, times)
+		if err != nil {
+			return nil, err
+		}
+		if len(klines) == 0 {
+			break
+		}
+
+		for _, k := range klines {
+			if seen[k.DateTime] {
+				continue
+			}
+			seen[k.DateTime] = true
+			t, err := time.ParseInLocation("2006-01-02", k.DateTime, time.Local)
+			if err != nil {
+				continue
+			}
+			if (t.Equal(startDate) || t.After(startDate)) && t.Before(end) {
+				out = append(out, k)
+			}
+		}
+
+		if len(klines) < int(klinePageSize) {
+			break
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		ti, _ := time.ParseInLocation("2006-01-02", out[i].DateTime, time.Local)
+		tj, _ := time.ParseInLocation("2006-01-02", out[j].DateTime, time.Local)
+		return ti.Before(tj)
+	})
+	return out, nil
+}
+
+func handleExKLineByDate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	var req exKLineByDateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	start, err := time.ParseInLocation("2006-01-02", req.StartDate, time.Local)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid start_date: "+err.Error())
+		return
+	}
+	end, err := time.ParseInLocation("2006-01-02", req.EndDate, time.Local)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid end_date: "+err.Error())
+		return
+	}
+	if req.Times == 0 {
+		req.Times = 1
+	}
+
+	klines, err := ExKLineRange(req.Category, req.Code, req.Period, req.Times, start, end)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	log.Printf("[gotdx] ex/kline-by-date %s cat=%d count=%d range=[%s,%s]",
+		req.Code, req.Category, len(klines), req.StartDate, req.EndDate)
+	writeJSON(w, http.StatusOK, klines)
 }

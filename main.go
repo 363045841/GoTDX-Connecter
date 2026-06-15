@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"KlineChartQuantGo/internal/api"
+	"KlineChartQuantGo/internal/client"
 )
 
 func main() {
@@ -15,6 +16,7 @@ func main() {
 		port = "8080"
 	}
 
+	client.Get()
 	router := api.NewRouter()
 	addr := fmt.Sprintf(":%s", port)
 

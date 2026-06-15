@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
+	"runtime/debug"
 )
 
 type ErrorResponse struct {
@@ -23,6 +25,7 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
+				log.Printf("[panic] %v\n%s", rec, debug.Stack())
 				writeError(w, http.StatusInternalServerError, "internal server error")
 			}
 		}()
@@ -48,6 +51,8 @@ func NewRouter() http.Handler {
 
 	mux.HandleFunc("/api/stock/quotes", handleStockQuotes)
 	mux.HandleFunc("/api/stock/kline", handleStockKLine)
+	mux.HandleFunc("/api/stock/kline-by-date", handleStockKLineByDate)
+	mux.HandleFunc("/api/stock/kline-count", handleStockKLineCount)
 	mux.HandleFunc("/api/stock/tick", handleStockTick)
 	mux.HandleFunc("/api/stock/list", handleStockList)
 	mux.HandleFunc("/api/stock/count", handleStockCount)
@@ -60,6 +65,7 @@ func NewRouter() http.Handler {
 	mux.HandleFunc("/api/ex/quote", handleExQuote)
 	mux.HandleFunc("/api/ex/quotes", handleExQuotes)
 	mux.HandleFunc("/api/ex/kline", handleExKLine)
+	mux.HandleFunc("/api/ex/kline-by-date", handleExKLineByDate)
 	mux.HandleFunc("/api/ex/tick", handleExTick)
 	mux.HandleFunc("/api/ex/history-transaction", handleExHistoryTransaction)
 	mux.HandleFunc("/api/ex/table", handleExTable)
