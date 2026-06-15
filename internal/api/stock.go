@@ -290,7 +290,7 @@ func StockKLineRange(category uint16, market uint8, code string, times uint16, a
 		}
 
 		for _, k := range klines {
-			key := fmt.Sprintf("%d-%02d-%02d", k.Year, k.Month, k.Day)
+			key := fmt.Sprintf("%d-%02d-%02dT%02d:%02d", k.Year, k.Month, k.Day, k.Hour, k.Minute)
 			if seen[key] {
 				continue
 			}
