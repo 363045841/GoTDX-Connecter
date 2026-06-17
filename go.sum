@@ -1,4 +1,4 @@
-github.com/bensema/gotdx v0.0.0-20260528024305-c5a5a83c91d6 h1:rrIdJGkVkpry0i6GVFKb5Ruiq/swiPtulqdFKkAlmRQ=
-github.com/bensema/gotdx v0.0.0-20260528024305-c5a5a83c91d6/go.mod h1:C7qSZ8KbTkE9MbYuBipuH9gUuIdrPEFJG7B+desKwoQ=
+github.com/363045841/gotdx v0.0.0-20260616052931-172637d9f8a4 h1:yd7rps2xAOI4kHmI/ToP3H8YbM/F6s2jBX1GBf5yL3s=
+github.com/363045841/gotdx v0.0.0-20260616052931-172637d9f8a4/go.mod h1:C7qSZ8KbTkE9MbYuBipuH9gUuIdrPEFJG7B+desKwoQ=
 golang.org/x/text v0.35.0 h1:JOVx6vVDFokkpaq1AEptVzLTpDe9KGpj5tR4/X+ybL8=
 golang.org/x/text v0.35.0/go.mod h1:khi/HExzZJ2pGnjenulevKNX1W67CUy0AsXcNubPGCA=
