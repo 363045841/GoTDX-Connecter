@@ -343,6 +343,11 @@ func handleStockKLineCount(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type stockKLineByDateResponse struct {
+	proto.SecurityBar
+	Amplitude float64 `json:"Amplitude"`
+}
+
 func handleStockKLineByDate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST required")
@@ -374,5 +379,16 @@ func handleStockKLineByDate(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[gotdx] stock/kline-by-date %s cat=%d count=%d range=[%s,%s]",
 		req.Code, req.Category, len(klines), req.StartDate, req.EndDate)
-	writeJSON(w, http.StatusOK, klines)
+
+	resp := make([]stockKLineByDateResponse, len(klines))
+	for i, k := range klines {
+		amp := 0.0
+		if k.Last != 0 {
+			amp = (k.High - k.Low) / k.Last * 100
+		} else if k.Open != 0 {
+			amp = (k.High - k.Low) / k.Open * 100
+		}
+		resp[i] = stockKLineByDateResponse{SecurityBar: k, Amplitude: amp}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

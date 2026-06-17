@@ -235,6 +235,11 @@ func ExKLineRange(category uint8, code string, period uint16, times uint16, star
 	return out, nil
 }
 
+type exKLineByDateResponse struct {
+	proto.ExKLineItem
+	Amplitude float64 `json:"Amplitude"`
+}
+
 func handleExKLineByDate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST required")
@@ -266,5 +271,14 @@ func handleExKLineByDate(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[gotdx] ex/kline-by-date %s cat=%d count=%d range=[%s,%s]",
 		req.Code, req.Category, len(klines), req.StartDate, req.EndDate)
-	writeJSON(w, http.StatusOK, klines)
+
+	resp := make([]exKLineByDateResponse, len(klines))
+	for i, k := range klines {
+		amp := 0.0
+		if k.Open != 0 {
+			amp = (k.High - k.Low) / k.Open * 100
+		}
+		resp[i] = exKLineByDateResponse{ExKLineItem: k, Amplitude: amp}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
