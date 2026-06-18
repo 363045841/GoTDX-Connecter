@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"log"
+	"math"
 	"net/http"
 	"sort"
 	"time"
@@ -276,7 +277,7 @@ func handleExKLineByDate(w http.ResponseWriter, r *http.Request) {
 	for i, k := range klines {
 		amp := 0.0
 		if k.Open != 0 {
-			amp = (k.High - k.Low) / k.Open * 100
+			amp = math.Round((k.High-k.Low)/k.Open*10000) / 100
 		}
 		resp[i] = exKLineByDateResponse{ExKLineItem: k, Amplitude: amp}
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"sort"
 	"time"
@@ -384,9 +385,9 @@ func handleStockKLineByDate(w http.ResponseWriter, r *http.Request) {
 	for i, k := range klines {
 		amp := 0.0
 		if k.Last != 0 {
-			amp = (k.High - k.Low) / k.Last * 100
+			amp = math.Round((k.High-k.Low)/k.Last*10000) / 100
 		} else if k.Open != 0 {
-			amp = (k.High - k.Low) / k.Open * 100
+			amp = math.Round((k.High-k.Low)/k.Open*10000) / 100
 		}
 		resp[i] = stockKLineByDateResponse{SecurityBar: k, Amplitude: amp}
 	}
