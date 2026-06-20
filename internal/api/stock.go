@@ -164,7 +164,26 @@ func handleStockHistoryTick(c *gin.Context) {
 	day := int(req.Date % 100)
 	base := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 
-	resp := make([]stockHistoryTickItem, len(tick))
+	var first *stockHistoryTickItem
+	if len(tick) > 0 {
+		if trans, err := client.Get().StockHistoryFullTransaction(req.Date, req.Market, req.Code); err == nil && len(trans) > 0 {
+			first = &stockHistoryTickItem{
+				Timestamp: base.Add(9*time.Hour + 30*time.Minute).Format("2006-01-02T15:04:05+08:00"),
+				Price:     trans[0].Price,
+				Avg:       trans[0].Price,
+				Vol:       trans[0].Vol,
+			}
+		}
+	}
+
+	respLen := len(tick)
+	if first != nil {
+		respLen++
+	}
+	resp := make([]stockHistoryTickItem, 0, respLen)
+	if first != nil {
+		resp = append(resp, *first)
+	}
 	for i, item := range tick {
 		var t time.Time
 		if i < 120 {
@@ -172,12 +191,12 @@ func handleStockHistoryTick(c *gin.Context) {
 		} else {
 			t = base.Add(13*time.Hour + 1*time.Minute + time.Duration(i-120)*time.Minute)
 		}
-		resp[i] = stockHistoryTickItem{
+		resp = append(resp, stockHistoryTickItem{
 			Timestamp: t.Format("2006-01-02T15:04:05+08:00"),
 			Price:     item.Price,
 			Avg:       item.Avg,
 			Vol:       item.Vol,
-		}
+		})
 	}
 	c.JSON(200, resp)
 }
