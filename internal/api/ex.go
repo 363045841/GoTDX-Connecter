@@ -1,15 +1,14 @@
 package api
 
 import (
-	"encoding/json"
 	"log"
 	"math"
-	"net/http"
 	"sort"
 	"time"
 
 	"KlineChartQuantGo/internal/client"
 	"github.com/bensema/gotdx/proto"
+	"github.com/gin-gonic/gin"
 )
 
 type exListRequest struct {
@@ -48,142 +47,110 @@ type exHistoryTransactionRequest struct {
 	Code     string `json:"code"`
 }
 
-func handleExCount(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
+func handleExCount(c *gin.Context) {
 	count, err := client.Get().ExCount()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]uint32{"count": count})
+	c.JSON(200, map[string]uint32{"count": count})
 }
 
-func handleExList(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
+func handleExList(c *gin.Context) {
 	var req exListRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
 	data, err := client.Get().ExList(req.Start, req.Count)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, data)
+	c.JSON(200, data)
 }
 
-func handleExQuote(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
+func handleExQuote(c *gin.Context) {
 	var req exQuoteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
 	data, err := client.Get().ExQuote(req.Category, req.Code)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, data)
+	c.JSON(200, data)
 }
 
-func handleExQuotes(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
+func handleExQuotes(c *gin.Context) {
 	var req exQuotesRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
 	if len(req.Categories) == 0 || len(req.Codes) == 0 {
-		writeError(w, http.StatusBadRequest, "categories and codes are required")
+		c.JSON(400, gin.H{"error": "categories and codes are required"})
 		return
 	}
 	data, err := client.Get().ExQuotes(req.Categories, req.Codes)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, data)
+	c.JSON(200, data)
 }
 
-func handleExKLine(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
+func handleExKLine(c *gin.Context) {
 	var req exKLineRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
 	klines, err := client.Get().ExKLine(req.Category, req.Code, req.Period, req.Start, req.Count, req.Times)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, klines)
+	c.JSON(200, klines)
 }
 
-func handleExTick(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
+func handleExTick(c *gin.Context) {
 	var req exTickRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
 	tick, err := client.Get().ExTickChart(req.Category, req.Code, req.Date)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, tick)
+	c.JSON(200, tick)
 }
 
-func handleExHistoryTransaction(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
+func handleExHistoryTransaction(c *gin.Context) {
 	var req exHistoryTransactionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
 	data, err := client.Get().ExHistoryTransaction(req.Date, req.Category, req.Code)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, data)
+	c.JSON(200, data)
 }
 
-func handleExTable(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
+func handleExTable(c *gin.Context) {
 	data, err := client.Get().ExTable()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"table": data})
+	c.JSON(200, map[string]string{"table": data})
 }
 
 type exKLineByDateRequest struct {
@@ -241,24 +208,20 @@ type exKLineByDateResponse struct {
 	Amplitude float64 `json:"Amplitude"`
 }
 
-func handleExKLineByDate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
+func handleExKLineByDate(c *gin.Context) {
 	var req exKLineByDateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
 	start, err := time.ParseInLocation("2006-01-02", req.StartDate, time.Local)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid start_date: "+err.Error())
+		c.JSON(400, gin.H{"error": "invalid start_date: " + err.Error()})
 		return
 	}
 	end, err := time.ParseInLocation("2006-01-02", req.EndDate, time.Local)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid end_date: "+err.Error())
+		c.JSON(400, gin.H{"error": "invalid end_date: " + err.Error()})
 		return
 	}
 	if req.Times == 0 {
@@ -267,7 +230,7 @@ func handleExKLineByDate(w http.ResponseWriter, r *http.Request) {
 
 	klines, err := ExKLineRange(req.Category, req.Code, req.Period, req.Times, start, end)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 	log.Printf("[gotdx] ex/kline-by-date %s cat=%d count=%d range=[%s,%s]",
@@ -281,5 +244,5 @@ func handleExKLineByDate(w http.ResponseWriter, r *http.Request) {
 		}
 		resp[i] = exKLineByDateResponse{ExKLineItem: k, Amplitude: amp}
 	}
-	writeJSON(w, http.StatusOK, resp)
+	c.JSON(200, resp)
 }

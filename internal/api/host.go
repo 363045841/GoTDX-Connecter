@@ -1,12 +1,11 @@
 package api
 
 import (
-	"encoding/json"
-	"net/http"
 	"time"
 
 	"KlineChartQuantGo/internal/client"
 	"github.com/bensema/gotdx"
+	"github.com/gin-gonic/gin"
 )
 
 type hostProbeRequest struct {
@@ -22,14 +21,10 @@ type hostListResponse struct {
 	Broker []string `json:"broker"`
 }
 
-func handleHostProbe(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
+func handleHostProbe(c *gin.Context) {
 	var req hostProbeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
 	timeout := time.Duration(req.Timeout) * time.Second
@@ -52,14 +47,10 @@ func handleHostProbe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	results := client.Probe(hosts, timeout)
-	writeJSON(w, http.StatusOK, results)
+	c.JSON(200, results)
 }
 
-func handleHostList(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "GET required")
-		return
-	}
+func handleHostList(c *gin.Context) {
 	resp := hostListResponse{
 		Main:   hostAddresses(client.MainHosts()),
 		Ex:     hostAddresses(client.ExHosts()),
@@ -67,7 +58,7 @@ func handleHostList(w http.ResponseWriter, r *http.Request) {
 		MACEx:  hostAddresses(client.MACExHosts()),
 		Broker: hostAddresses(client.BrokerHosts()),
 	}
-	writeJSON(w, http.StatusOK, resp)
+	c.JSON(200, resp)
 }
 
 func hostAddresses(hosts []gotdx.HostInfo) []string {

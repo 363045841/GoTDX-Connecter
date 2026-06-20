@@ -47,6 +47,7 @@ func Reprobe() error {
 func buildClient() *gotdx.Client {
 	mainHosts := resolveHosts("main", "GOTDX_MAIN_HOSTS", gotdx.MainHostAddresses(), time.Second*2)
 	exHosts := resolveHosts("ex", "GOTDX_EX_HOSTS", gotdx.ExHostAddresses(), time.Second*2)
+	macHosts := resolveHosts("mac", "GOTDX_MAC_HOSTS", gotdx.MACHostAddresses(), time.Second*2)
 
 	if len(mainHosts) == 0 {
 		log.Println("[gotdx] no reachable main hosts, using full default list")
@@ -56,18 +57,25 @@ func buildClient() *gotdx.Client {
 		log.Println("[gotdx] no reachable ex hosts, using full default list")
 		exHosts = gotdx.ExHostAddresses()
 	}
+	if len(macHosts) == 0 {
+		log.Println("[gotdx] no reachable mac hosts, using full default list")
+		macHosts = gotdx.MACHostAddresses()
+	}
 	if len(mainHosts) == 0 {
 		return nil
 	}
 
 	log.Printf("[gotdx] main hosts (%d): %v", len(mainHosts), mainHosts)
 	log.Printf("[gotdx] ex hosts (%d): %v", len(exHosts), exHosts)
+	log.Printf("[gotdx] mac hosts (%d): %v", len(macHosts), macHosts)
 
 	opts := []gotdx.Option{
 		gotdx.WithTCPAddress(mainHosts[0]),
 		gotdx.WithTCPAddressPool(mainHosts[1:]...),
 		gotdx.WithExTCPAddress(exHosts[0]),
 		gotdx.WithExTCPAddressPool(exHosts[1:]...),
+		gotdx.WithMacTCPAddress(macHosts[0]),
+		gotdx.WithMacTCPAddressPool(macHosts[1:]...),
 		gotdx.WithTimeoutSec(6),
 	}
 	if os.Getenv("GOTDX_AUTO_SELECT") == "1" {

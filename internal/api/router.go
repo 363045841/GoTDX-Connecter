@@ -1,90 +1,88 @@
 package api
 
 import (
-	"encoding/json"
 	"log"
-	"net/http"
 	"runtime/debug"
+
+	"github.com/gin-gonic/gin"
 )
 
-type ErrorResponse struct {
-	Error string `json:"error"`
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, ErrorResponse{Error: msg})
-}
-
-func recoveryMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func recoveryMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Printf("[panic] %v\n%s", rec, debug.Stack())
-				writeError(w, http.StatusInternalServerError, "internal server error")
+				c.AbortWithStatusJSON(500, gin.H{"error": "internal server error"})
 			}
 		}()
-		next.ServeHTTP(w, r)
-	})
+		c.Next()
+	}
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type")
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
 			return
 		}
-		next.ServeHTTP(w, r)
-	})
+		c.Next()
+	}
 }
 
-func NewRouter() http.Handler {
-	mux := http.NewServeMux()
+func NewRouter() *gin.Engine {
+	r := gin.New()
+	r.Use(recoveryMiddleware(), corsMiddleware())
 
-	mux.HandleFunc("/api/stock/quotes", handleStockQuotes)
-	mux.HandleFunc("/api/stock/kline", handleStockKLine)
-	mux.HandleFunc("/api/stock/kline-by-date", handleStockKLineByDate)
-	mux.HandleFunc("/api/stock/kline-count", handleStockKLineCount)
-	mux.HandleFunc("/api/stock/tick", handleStockTick)
-	mux.HandleFunc("/api/stock/list", handleStockList)
-	mux.HandleFunc("/api/stock/count", handleStockCount)
-	mux.HandleFunc("/api/stock/index-info", handleStockIndexInfo)
-	mux.HandleFunc("/api/stock/transaction", handleStockTransaction)
-	mux.HandleFunc("/api/stock/history-transaction", handleStockHistoryTransaction)
+	stock := r.Group("/api/stock")
+	{
+		stock.POST("/quotes", handleStockQuotes)
+		stock.POST("/kline", handleStockKLine)
+		stock.POST("/kline-by-date", handleStockKLineByDate)
+		stock.POST("/kline-count", handleStockKLineCount)
+		stock.POST("/tick", handleStockTick)
+		stock.POST("/history-tick", handleStockHistoryTick)
+		stock.POST("/list", handleStockList)
+		stock.POST("/count", handleStockCount)
+		stock.POST("/index-info", handleStockIndexInfo)
+		stock.POST("/transaction", handleStockTransaction)
+		stock.POST("/history-transaction", handleStockHistoryTransaction)
+	}
 
-	mux.HandleFunc("/api/ex/count", handleExCount)
-	mux.HandleFunc("/api/ex/list", handleExList)
-	mux.HandleFunc("/api/ex/quote", handleExQuote)
-	mux.HandleFunc("/api/ex/quotes", handleExQuotes)
-	mux.HandleFunc("/api/ex/kline", handleExKLine)
-	mux.HandleFunc("/api/ex/kline-by-date", handleExKLineByDate)
-	mux.HandleFunc("/api/ex/tick", handleExTick)
-	mux.HandleFunc("/api/ex/history-transaction", handleExHistoryTransaction)
-	mux.HandleFunc("/api/ex/table", handleExTable)
+	ex := r.Group("/api/ex")
+	{
+		ex.POST("/count", handleExCount)
+		ex.POST("/list", handleExList)
+		ex.POST("/quote", handleExQuote)
+		ex.POST("/quotes", handleExQuotes)
+		ex.POST("/kline", handleExKLine)
+		ex.POST("/kline-by-date", handleExKLineByDate)
+		ex.POST("/tick", handleExTick)
+		ex.POST("/history-transaction", handleExHistoryTransaction)
+		ex.POST("/table", handleExTable)
+	}
 
-	mux.HandleFunc("/api/mac/board-list", handleMACBoardList)
-	mux.HandleFunc("/api/mac/board-members", handleMACBoardMembers)
-	mux.HandleFunc("/api/mac/board-members-quotes", handleMACBoardMembersQuotes)
-	mux.HandleFunc("/api/mac/board-members-quotes-dynamic", handleMACBoardMembersQuotesDynamic)
-	mux.HandleFunc("/api/mac/symbol-quotes", handleMACSymbolQuotes)
-	mux.HandleFunc("/api/mac/quotes", handleMACQuotes)
-	mux.HandleFunc("/api/mac/transactions", handleMACTransactions)
-	mux.HandleFunc("/api/mac/auction", handleMACAuction)
-	mux.HandleFunc("/api/mac/tick-charts", handleMACTickCharts)
-	mux.HandleFunc("/api/mac/symbol-info", handleMACSymbolInfo)
-	mux.HandleFunc("/api/mac/capital-flow", handleMACCapitalFlow)
-	mux.HandleFunc("/api/mac/market-monitor", handleMACMarketMonitor)
+	mac := r.Group("/api/mac")
+	{
+		mac.POST("/board-list", handleMACBoardList)
+		mac.POST("/board-members", handleMACBoardMembers)
+		mac.POST("/board-members-quotes", handleMACBoardMembersQuotes)
+		mac.POST("/board-members-quotes-dynamic", handleMACBoardMembersQuotesDynamic)
+		mac.POST("/symbol-quotes", handleMACSymbolQuotes)
+		mac.POST("/quotes", handleMACQuotes)
+		mac.POST("/transactions", handleMACTransactions)
+		mac.POST("/auction", handleMACAuction)
+		mac.POST("/tick-charts", handleMACTickCharts)
+		mac.GET("/server-info", handleMACServerInfo)
+		mac.POST("/symbol-info", handleMACSymbolInfo)
+		mac.POST("/capital-flow", handleMACCapitalFlow)
+		mac.POST("/market-monitor", handleMACMarketMonitor)
+	}
 
-	mux.HandleFunc("/api/hosts/probe", handleHostProbe)
-	mux.HandleFunc("/api/hosts/list", handleHostList)
+	r.POST("/api/hosts/probe", handleHostProbe)
+	r.GET("/api/hosts/list", handleHostList)
 
-	return recoveryMiddleware(corsMiddleware(mux))
+	return r
 }
