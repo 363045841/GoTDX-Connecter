@@ -2,27 +2,64 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
-
-	"KlineChartQuantGo/internal/api"
-	"KlineChartQuantGo/internal/client"
-	"github.com/gin-gonic/gin"
+	"os/exec"
+	"path/filepath"
 )
 
 func main() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
 	}
 
-	gin.SetMode(gin.ReleaseMode)
-	client.Get()
-	router := api.NewRouter()
-	addr := fmt.Sprintf(":%s", port)
-
-	log.Printf("starting gotdx server on http://127.0.0.1%s", addr)
-	if err := router.Run(addr); err != nil {
-		log.Fatalf("server error: %v", err)
+	var target string
+	switch os.Args[1] {
+	case "tdx", "tdx-api", "gotdx":
+		target = "./services/tdx-api"
+	case "binance", "binance-api":
+		target = "./services/binance-api"
+	case "help", "-h", "--help":
+		printUsage()
+		return
+	default:
+		fmt.Fprintf(os.Stderr, "unknown service: %s\n\n", os.Args[1])
+		printUsage()
+		os.Exit(1)
 	}
+
+	cmd := exec.Command("go", append([]string{"run", target}, os.Args[2:]...)...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.Env = os.Environ()
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		fmt.Fprintf(os.Stderr, "failed to run %s: %v\n", target, err)
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	exe := filepath.Base(os.Args[0])
+	if exe == "main" || exe == "main.exe" {
+		exe = "go run ."
+	}
+	fmt.Fprintf(os.Stderr, `KlineChartQuantGo — multi-service launcher
+
+Usage:
+  %s <service>
+
+Services:
+  tdx, tdx-api, gotdx     Start TDX/gotdx API (port 8080)
+  binance, binance-api    Start Binance API (port 8081)
+
+Examples:
+  go run . tdx
+  go run . binance
+  go run ./services/tdx-api
+  go run ./services/binance-api
+`, exe)
 }

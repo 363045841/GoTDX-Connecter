@@ -5,8 +5,8 @@ import (
 	"log"
 	"os"
 
-	"BianceAPI/internal/binance"
-	"BianceAPI/internal/handler"
+	"KlineChartQuantGo/services/binance-api/internal/binance"
+	"KlineChartQuantGo/services/binance-api/internal/handler"
 	"github.com/gin-gonic/gin"
 )
 

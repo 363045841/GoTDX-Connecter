@@ -3,7 +3,7 @@ package api
 import (
 	"time"
 
-	"KlineChartQuantGo/internal/client"
+	"KlineChartQuantGo/services/tdx-api/internal/client"
 	"github.com/bensema/gotdx"
 	"github.com/gin-gonic/gin"
 )

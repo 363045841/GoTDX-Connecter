@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"KlineChartQuantGo/internal/client"
+	"KlineChartQuantGo/services/tdx-api/internal/client"
 	"github.com/bensema/gotdx/proto"
 	"github.com/gin-gonic/gin"
 )

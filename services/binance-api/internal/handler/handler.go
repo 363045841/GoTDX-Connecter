@@ -5,18 +5,18 @@ import (
 	"net/http"
 	"time"
 
-	"BianceAPI/internal/binance"
+	"KlineChartQuantGo/services/binance-api/internal/binance"
 	"github.com/gin-gonic/gin"
 )
 
 // NewRouter 注册路由:
-//   GET /api/biance/orderbook?symbol=btcusdt
-//   GET /api/biance/depth-events?symbol=btcusdt
+//   GET /api/binance/orderbook?symbol=btcusdt
+//   GET /api/binance/depth-events?symbol=btcusdt
 func NewRouter(bc *binance.Client, dh *binance.DepthHub) *gin.Engine {
 	r := gin.New()
 	r.Use(cors())
 
-	api := r.Group("/api/biance")
+	api := r.Group("/api/binance")
 	{
 		api.GET("/orderbook", func(c *gin.Context) {
 			symbol := c.DefaultQuery("symbol", "btcusdt")
