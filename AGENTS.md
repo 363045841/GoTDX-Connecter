@@ -30,7 +30,7 @@ BaoStock lives in a **separate** repo (`stockbao`, port 8000). Do not add it her
 ## Key facts
 
 - **One module**: root `go.mod` → `module KlineChartQuantGo`. No nested `go.mod` under services.
-- **Go 1.26**, Gin framework, no DB, no tests, no CI.
+- **Go 1.26**, Gin framework, SQLite symbol directory persistence, API package tests, no CI.
 - Import paths: `KlineChartQuantGo/services/tdx-api/internal/...` and `KlineChartQuantGo/services/binance-api/internal/...`
 - tdx-api client singleton via `client.Get()` — probes TDX hosts (2s timeout) at startup.
 - binance-api defaults proxy to `http://127.0.0.1:6666` if `HTTP_PROXY` unset.
@@ -43,6 +43,7 @@ BaoStock lives in a **separate** repo (`stockbao`, port 8000). Do not add it her
 | Var | Default | Note |
 |---|---|---|
 | `PORT` | `8080` | |
+| `SYMBOL_DB_PATH` | `data/tdx-symbols.db` | Search directory snapshot; refreshed every 24 hours |
 | `GOTDX_AUTO_SELECT` | — | `"1"` = auto-pick fastest host |
 | `GOTDX_MAIN_HOSTS` | built-in | comma-separated |
 | `GOTDX_EX_HOSTS` | built-in | comma-separated |

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -20,6 +21,30 @@ type fakeSymbolDirectoryLoader struct {
 	err        error
 	stockCalls int
 	exCalls    int
+}
+
+type fakeSymbolDirectoryStore struct {
+	snapshot     symbolDirectorySnapshot
+	found        bool
+	loadErr      error
+	replaceErr   error
+	loadCalls    int
+	replaceCalls int
+}
+
+func (s *fakeSymbolDirectoryStore) Load() (symbolDirectorySnapshot, bool, error) {
+	s.loadCalls++
+	return s.snapshot, s.found, s.loadErr
+}
+
+func (s *fakeSymbolDirectoryStore) Replace(snapshot symbolDirectorySnapshot) error {
+	s.replaceCalls++
+	if s.replaceErr != nil {
+		return s.replaceErr
+	}
+	s.snapshot = snapshot
+	s.found = true
+	return nil
 }
 
 func (l *fakeSymbolDirectoryLoader) StockAll(market uint8) ([]proto.Security, error) {
@@ -53,9 +78,132 @@ func (l *fakeSymbolDirectoryLoader) ExList(start uint32, count uint16) ([]proto.
 }
 
 func newSearchTestCache(loader *fakeSymbolDirectoryLoader, now *time.Time) *symbolDirectoryCache {
-	cache := newSymbolDirectoryCache(loader, 30*time.Minute)
+	cache := newSymbolDirectoryCache(loader, nil, 30*time.Minute)
 	cache.now = func() time.Time { return *now }
 	return cache
+}
+
+func TestSymbolDirectoryCacheUsesFreshPersistedSnapshot(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	loader := &fakeSymbolDirectoryLoader{err: errors.New("loader must not be called")}
+	store := &fakeSymbolDirectoryStore{snapshot: symbolDirectorySnapshot{
+		Entries: []symbolSearchItem{{
+			Symbol: "000001", Description: "Ping An", Exchange: "SZ", Source: "gotdx",
+			Params: map[string]uint8{"market": 0},
+		}},
+		LoadedAt: now.Add(-time.Hour),
+	}, found: true}
+	cache := newSymbolDirectoryCache(loader, store, 24*time.Hour)
+	cache.now = func() time.Time { return now }
+
+	items, err := cache.search("000001", 20)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("search = %#v, err:%v", items, err)
+	}
+	if loader.stockCalls != 0 || store.loadCalls != 1 || store.replaceCalls != 0 {
+		t.Fatalf("calls = loader:%d load:%d replace:%d", loader.stockCalls, store.loadCalls, store.replaceCalls)
+	}
+}
+
+func TestSymbolDirectoryCacheUsesStalePersistedSnapshotWhenRefreshFails(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	loader := &fakeSymbolDirectoryLoader{err: errors.New("TDX unavailable")}
+	store := &fakeSymbolDirectoryStore{snapshot: symbolDirectorySnapshot{
+		Entries: []symbolSearchItem{{
+			Symbol: "000001", Description: "Ping An", Exchange: "SZ", Source: "gotdx",
+			Params: map[string]uint8{"market": 0},
+		}},
+		LoadedAt: now.Add(-25 * time.Hour),
+	}, found: true}
+	cache := newSymbolDirectoryCache(loader, store, 24*time.Hour)
+	cache.now = func() time.Time { return now }
+
+	items, err := cache.search("000001", 20)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("search = %#v, err:%v", items, err)
+	}
+	if loader.stockCalls != 1 || store.loadCalls != 1 || store.replaceCalls != 0 {
+		t.Fatalf("calls = loader:%d load:%d replace:%d", loader.stockCalls, store.loadCalls, store.replaceCalls)
+	}
+}
+
+func TestSymbolDirectoryCachePersistsSuccessfulRefresh(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{
+		0: {{Code: "000001", Name: "Ping An"}},
+	}}
+	store := &fakeSymbolDirectoryStore{}
+	cache := newSymbolDirectoryCache(loader, store, 24*time.Hour)
+	cache.now = func() time.Time { return now }
+
+	items, err := cache.search("000001", 20)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("search = %#v, err:%v", items, err)
+	}
+	if store.loadCalls != 1 || store.replaceCalls != 1 {
+		t.Fatalf("store calls = load:%d replace:%d", store.loadCalls, store.replaceCalls)
+	}
+	if !store.found || !store.snapshot.LoadedAt.Equal(now) || !reflect.DeepEqual(store.snapshot.Entries, cache.entries) {
+		t.Fatalf("persisted snapshot = %#v", store.snapshot)
+	}
+}
+
+func TestSymbolDirectoryCacheIgnoresStoreReadAndWriteFailures(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{
+		0: {{Code: "000001", Name: "Ping An"}},
+	}}
+	store := &fakeSymbolDirectoryStore{
+		loadErr:    errors.New("read failed"),
+		replaceErr: errors.New("write failed"),
+	}
+	cache := newSymbolDirectoryCache(loader, store, 24*time.Hour)
+	cache.now = func() time.Time { return now }
+
+	items, err := cache.search("000001", 20)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("search = %#v, err:%v", items, err)
+	}
+	if loader.stockCalls != 3 || store.loadCalls != 1 || store.replaceCalls != 1 {
+		t.Fatalf("calls = loader:%d load:%d replace:%d", loader.stockCalls, store.loadCalls, store.replaceCalls)
+	}
+}
+
+func TestSymbolDirectoryCacheReusesSQLiteSnapshotAcrossInstances(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	path := filepath.Join(t.TempDir(), "symbols.db")
+	firstStore, err := newSQLiteSymbolDirectoryStore(path)
+	if err != nil {
+		t.Fatalf("open first store: %v", err)
+	}
+	firstLoader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{
+		0: {{Code: "000001", Name: "Ping An"}},
+	}}
+	firstCache := newSymbolDirectoryCache(firstLoader, firstStore, 24*time.Hour)
+	firstCache.now = func() time.Time { return now }
+	if _, err := firstCache.search("000001", 20); err != nil {
+		t.Fatalf("populate first cache: %v", err)
+	}
+	if err := firstStore.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	secondStore, err := newSQLiteSymbolDirectoryStore(path)
+	if err != nil {
+		t.Fatalf("open second store: %v", err)
+	}
+	t.Cleanup(func() { _ = secondStore.Close() })
+	secondLoader := &fakeSymbolDirectoryLoader{err: errors.New("loader must not be called")}
+	secondCache := newSymbolDirectoryCache(secondLoader, secondStore, 24*time.Hour)
+	secondCache.now = func() time.Time { return now }
+
+	items, err := secondCache.search("000001", 20)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("search second cache = %#v, err:%v", items, err)
+	}
+	if secondLoader.stockCalls != 0 {
+		t.Fatalf("second loader stock calls = %d, want 0", secondLoader.stockCalls)
+	}
 }
 
 func TestSymbolSearchRanksCodeBeforeNameAndAppliesLimit(t *testing.T) {
@@ -175,7 +323,9 @@ func TestSymbolDirectoryCacheFallsBackToOldDirectoryAfterRefreshFailure(t *testi
 }
 
 func TestSymbolSearchHandlerValidatesRequestAndIsRegistered(t *testing.T) {
-	router := NewRouter()
+	now := time.Unix(0, 0)
+	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{0: {{Code: "000001", Name: "Ping An"}}}}
+	router := newRouter(newSearchTestCache(loader, &now))
 	for _, body := range []string{"{", `{"query":"   "}`} {
 		req := httptest.NewRequest(http.MethodPost, "/api/symbol/search", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -186,8 +336,6 @@ func TestSymbolSearchHandlerValidatesRequestAndIsRegistered(t *testing.T) {
 		}
 	}
 
-	now := time.Unix(0, 0)
-	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{0: {{Code: "000001", Name: "Ping An"}}}}
 	handlerRouter := gin.New()
 	handlerRouter.POST("/api/symbol/search", newSymbolSearchHandler(newSearchTestCache(loader, &now)))
 	req := httptest.NewRequest(http.MethodPost, "/api/symbol/search", bytes.NewBufferString(`{"query":"000001","limit":101}`))

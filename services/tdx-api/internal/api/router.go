@@ -2,6 +2,8 @@ package api
 
 import (
 	"log"
+	"os"
+	"path/filepath"
 	"runtime/debug"
 
 	"github.com/gin-gonic/gin"
@@ -33,6 +35,23 @@ func corsMiddleware() gin.HandlerFunc {
 }
 
 func NewRouter() *gin.Engine {
+	path := os.Getenv("SYMBOL_DB_PATH")
+	if path == "" {
+		path = filepath.Join("data", "tdx-symbols.db")
+	}
+	store, err := newSQLiteSymbolDirectoryStore(path)
+	if err != nil {
+		log.Printf("symbol directory database disabled: %v", err)
+		store = nil
+	}
+	cache := newSymbolDirectoryCache(gotdxSymbolDirectoryLoader{}, store, symbolDirectoryTTL)
+	if err := cache.warmUp(); err != nil {
+		log.Printf("symbol directory: warmup failed: %v", err)
+	}
+	return newRouter(cache)
+}
+
+func newRouter(symbolCache *symbolDirectoryCache) *gin.Engine {
 	r := gin.New()
 	r.Use(recoveryMiddleware(), corsMiddleware())
 
@@ -83,7 +102,7 @@ func NewRouter() *gin.Engine {
 
 	r.POST("/api/hosts/probe", handleHostProbe)
 	r.GET("/api/hosts/list", handleHostList)
-	r.POST("/api/symbol/search", handleSymbolSearch)
+	r.POST("/api/symbol/search", newSymbolSearchHandler(symbolCache))
 
 	return r
 }

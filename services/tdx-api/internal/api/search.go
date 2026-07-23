@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -13,7 +14,7 @@ import (
 )
 
 const (
-	symbolDirectoryTTL        = 30 * time.Minute
+	symbolDirectoryTTL        = 24 * time.Hour
 	exDirectoryPageSize       = 1000
 	defaultSymbolSearchLimit  = 20
 	maxSymbolSearchLimit      = 100
@@ -49,18 +50,26 @@ type symbolSearchItem struct {
 }
 
 type symbolDirectoryCache struct {
-	loader   symbolDirectoryLoader
-	ttl      time.Duration
-	now      func() time.Time
-	mu       sync.Mutex
-	entries  []symbolSearchItem
-	loadedAt time.Time
-	retryAt  time.Time
-	loaded   bool
+	loader    symbolDirectoryLoader
+	store     symbolDirectoryStore
+	ttl       time.Duration
+	now       func() time.Time
+	mu        sync.Mutex
+	entries   []symbolSearchItem
+	loadedAt  time.Time
+	retryAt   time.Time
+	loaded    bool
+	storeRead bool
 }
 
-func newSymbolDirectoryCache(loader symbolDirectoryLoader, ttl time.Duration) *symbolDirectoryCache {
-	return &symbolDirectoryCache{loader: loader, ttl: ttl, now: time.Now}
+func newSymbolDirectoryCache(loader symbolDirectoryLoader, store symbolDirectoryStore, ttl time.Duration) *symbolDirectoryCache {
+	return &symbolDirectoryCache{loader: loader, store: store, ttl: ttl, now: time.Now}
+}
+
+func (c *symbolDirectoryCache) warmUp() error {
+	log.Printf("symbol directory: warming up")
+	_, err := c.directory()
+	return err
 }
 
 func (c *symbolDirectoryCache) search(query string, limit int) ([]symbolSearchItem, error) {
@@ -87,23 +96,59 @@ func (c *symbolDirectoryCache) search(query string, limit int) ([]symbolSearchIt
 func (c *symbolDirectoryCache) directory() ([]symbolSearchItem, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.loadPersistedDirectory()
 	now := c.now()
 	if c.loaded && (now.Sub(c.loadedAt) < c.ttl || now.Before(c.retryAt)) {
 		return c.entries, nil
 	}
+	log.Printf("symbol directory: fetching from gotdx (previous entries=%d)", len(c.entries))
+	started := time.Now()
 	entries, err := c.loadDirectory()
 	if err != nil {
 		if c.loaded {
 			c.retryAt = now.Add(symbolDirectoryRetryDelay)
+			log.Printf("symbol directory: gotdx fetch failed, using stale cache entries=%d age=%s err=%v",
+				len(c.entries), now.Sub(c.loadedAt).Round(time.Second), err)
 			return c.entries, nil
 		}
+		log.Printf("symbol directory: gotdx fetch failed with no cache: %v", err)
 		return nil, err
 	}
+	elapsed := time.Since(started).Round(time.Millisecond)
+	if c.store != nil {
+		if err := c.store.Replace(symbolDirectorySnapshot{Entries: entries, LoadedAt: now}); err != nil {
+			log.Printf("symbol directory database write failed: %v", err)
+		} else {
+			log.Printf("symbol directory: persisted %d entries to sqlite in %s", len(entries), elapsed)
+		}
+	}
+	log.Printf("symbol directory: loaded %d entries from gotdx in %s", len(entries), elapsed)
 	c.entries = entries
 	c.loadedAt = now
 	c.retryAt = time.Time{}
 	c.loaded = true
 	return c.entries, nil
+}
+
+func (c *symbolDirectoryCache) loadPersistedDirectory() {
+	if c.storeRead || c.store == nil {
+		return
+	}
+	c.storeRead = true
+	snapshot, found, err := c.store.Load()
+	if err != nil {
+		log.Printf("symbol directory database read failed: %v", err)
+		return
+	}
+	if found {
+		c.entries = snapshot.Entries
+		c.loadedAt = snapshot.LoadedAt
+		c.loaded = true
+		age := c.now().Sub(snapshot.LoadedAt).Round(time.Second)
+		log.Printf("symbol directory: loaded %d entries from sqlite (age=%s)", len(snapshot.Entries), age)
+	} else {
+		log.Printf("symbol directory: no sqlite snapshot found")
+	}
 }
 
 func (c *symbolDirectoryCache) loadDirectory() ([]symbolSearchItem, error) {
@@ -229,10 +274,4 @@ func newSymbolSearchHandler(cache *symbolDirectoryCache) gin.HandlerFunc {
 		}
 		c.JSON(200, items)
 	}
-}
-
-var defaultSymbolDirectoryCache = newSymbolDirectoryCache(gotdxSymbolDirectoryLoader{}, symbolDirectoryTTL)
-
-func handleSymbolSearch(c *gin.Context) {
-	newSymbolSearchHandler(defaultSymbolDirectoryCache)(c)
 }
