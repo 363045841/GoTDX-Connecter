@@ -83,6 +83,7 @@ func NewRouter() *gin.Engine {
 
 	r.POST("/api/hosts/probe", handleHostProbe)
 	r.GET("/api/hosts/list", handleHostList)
+	r.POST("/api/symbol/search", handleSymbolSearch)
 
 	return r
 }
