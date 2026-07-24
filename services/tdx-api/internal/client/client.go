@@ -2,6 +2,7 @@ package client
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -21,6 +22,9 @@ func Get() *gotdx.Client {
 	defer mu.Unlock()
 	if instance == nil {
 		instance = buildClient()
+		if err := connectClient(instance); err != nil {
+			log.Printf("[gotdx] initial connection failed: %v", err)
+		}
 	}
 	return instance
 }
@@ -39,8 +43,24 @@ func Reprobe() error {
 		}
 		return errors.New("Reprobe: no reachable hosts")
 	}
+	if err := connectClient(newClient); err != nil {
+		return fmt.Errorf("Reprobe: connect failed: %w", err)
+	}
 	instance = newClient
 	log.Println("[gotdx] re-probe complete, new client created")
+	return nil
+}
+
+func connectClient(c *gotdx.Client) error {
+	if c == nil {
+		return errors.New("client is nil")
+	}
+	if _, err := c.Connect(); err != nil {
+		return fmt.Errorf("main connection failed: %w", err)
+	}
+	if _, err := c.ConnectEx(); err != nil {
+		return fmt.Errorf("extended connection failed: %w", err)
+	}
 	return nil
 }
 

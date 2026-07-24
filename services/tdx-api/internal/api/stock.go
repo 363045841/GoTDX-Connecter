@@ -5,6 +5,7 @@ import (
 	"log"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"KlineChartQuantGo/services/tdx-api/internal/client"
@@ -279,6 +280,8 @@ type stockKLineByDateRequest struct {
 	EndDate   string `json:"end_date"`
 	Times     uint16 `json:"times"`
 	Adjust    uint16 `json:"adjust"`
+	// Kind 来自搜索 params.kind：stock|index；空则按 gotdx types.IsIndex(code.exchange) 判定
+	Kind string `json:"kind"`
 }
 
 type stockKLineCountRequest struct {
@@ -288,6 +291,7 @@ type stockKLineCountRequest struct {
 	Count    uint16 `json:"count"`
 	Times    uint16 `json:"times"`
 	Adjust   uint16 `json:"adjust"`
+	Kind     string `json:"kind"`
 }
 
 func tryStockKLine(category uint16, market uint8, code string, start uint16, count uint16, times uint16, adjust uint16) (klines []proto.SecurityBar, err error) {
@@ -297,6 +301,61 @@ func tryStockKLine(category uint16, market uint8, code string, start uint16, cou
 		}
 	}()
 	return client.Get().StockKLine(category, market, code, start, count, times, adjust)
+}
+
+// tryIndexBars 拉指数 K 线并映射为 SecurityBar，供与股票接口共用按日筛选
+func tryIndexBars(category uint16, market uint8, code string, start uint16, count uint16) (klines []proto.SecurityBar, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("GetIndexBars panic: %v", r)
+		}
+	}()
+	reply, err := client.Get().GetIndexBars(category, market, code, start, count)
+	if err != nil {
+		return nil, err
+	}
+	if reply == nil {
+		return []proto.SecurityBar{}, nil
+	}
+	out := make([]proto.SecurityBar, 0, len(reply.List))
+	for _, b := range reply.List {
+		dt, parseErr := time.ParseInLocation("2006-01-02 15:04:05", b.DateTime, time.Local)
+		if parseErr != nil {
+			dt, parseErr = time.ParseInLocation("2006-01-02T15:04:05", b.DateTime, time.Local)
+		}
+		if parseErr != nil {
+			dt = time.Date(b.Year, time.Month(b.Month), b.Day, b.Hour, b.Minute, 0, 0, time.Local)
+		}
+		out = append(out, proto.SecurityBar{
+			Open:      b.Open,
+			Close:     b.Close,
+			High:      b.High,
+			Low:       b.Low,
+			Vol:       b.Vol,
+			Amount:    b.Amount,
+			Year:      b.Year,
+			Month:     b.Month,
+			Day:       b.Day,
+			Hour:      b.Hour,
+			Minute:    b.Minute,
+			DateTime:  dt,
+			UpCount:   b.UpCount,
+			DownCount: b.DownCount,
+		})
+	}
+	return out, nil
+}
+
+// isIndexKLineRequest 是否按指数接口拉线：优先 kind，否则 IsIndex(code.EXCHANGE)
+func isIndexKLineRequest(kind string, market uint8, code string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case symbolKindIndex:
+		return true
+	case symbolKindStock, symbolKindEx:
+		return false
+	}
+	// kind 未传时，用 gotdx 规则判定（不猜 market  alone）
+	return mainMarketSymbolKind(code, mainExchange(market)) == symbolKindIndex
 }
 
 func tryExKLine(category uint8, code string, period uint16, start uint32, count uint16, times uint16) (klines []proto.ExKLineItem, err error) {
@@ -320,6 +379,18 @@ func safeStockKLine(category uint16, market uint8, code string, start uint16, co
 	return tryStockKLine(category, market, code, start, count, times, adjust)
 }
 
+func safeIndexBars(category uint16, market uint8, code string, start uint16, count uint16) ([]proto.SecurityBar, error) {
+	klines, err := tryIndexBars(category, market, code, start, count)
+	if err == nil {
+		return klines, nil
+	}
+	log.Printf("[gotdx] GetIndexBars failed (%v), re-probing hosts and retrying...", err)
+	if rpErr := client.Reprobe(); rpErr != nil {
+		return nil, fmt.Errorf("re-probe failed: %w (original: %v)", rpErr, err)
+	}
+	return tryIndexBars(category, market, code, start, count)
+}
+
 func safeExKLine(category uint8, code string, period uint16, start uint32, count uint16, times uint16) ([]proto.ExKLineItem, error) {
 	klines, err := tryExKLine(category, code, period, start, count, times)
 	if err == nil {
@@ -333,6 +404,51 @@ func safeExKLine(category uint8, code string, period uint16, start uint32, count
 }
 
 func StockKLineRange(category uint16, market uint8, code string, times uint16, adjust uint16, startDate, endDate time.Time) ([]proto.SecurityBar, error) {
+	return stockOrIndexKLineRange(category, market, code, times, adjust, startDate, endDate, false)
+}
+
+// indexPageSize GetIndexBars 单次请求上限，保持在已验证的 800 条以内
+const indexPageSize uint16 = 798
+
+// IndexKLineRange 按 GetIndexBars 获取指数 K 线并按日期过滤
+// GetIndexBars 不支持 start>0 分页，因此只请求一页 count=indexPageSize
+func IndexKLineRange(category uint16, market uint8, code string, startDate, endDate time.Time) ([]proto.SecurityBar, error) {
+	klines, err := safeIndexBars(category, market, code, 0, indexPageSize)
+	if err != nil {
+		return nil, err
+	}
+	return filterKLineByDate(klines, startDate, endDate, true), nil
+}
+
+func filterKLineByDate(klines []proto.SecurityBar, startDate, endDate time.Time, dedup bool) []proto.SecurityBar {
+	out := make([]proto.SecurityBar, 0, len(klines))
+	end := endDate.Add(24 * time.Hour)
+	seen := make(map[string]bool)
+
+	for _, k := range klines {
+		if dedup {
+			key := fmt.Sprintf("%d-%02d-%02dT%02d:%02d", k.Year, k.Month, k.Day, k.Hour, k.Minute)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		if (k.DateTime.Equal(startDate) || k.DateTime.After(startDate)) && k.DateTime.Before(end) {
+			out = append(out, k)
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].DateTime.Before(out[j].DateTime)
+	})
+	return out
+}
+
+func stockOrIndexKLineRange(category uint16, market uint8, code string, times uint16, adjust uint16, startDate, endDate time.Time, asIndex bool) ([]proto.SecurityBar, error) {
+	if asIndex {
+		return IndexKLineRange(category, market, code, startDate, endDate)
+	}
+
 	out := []proto.SecurityBar{}
 	seen := make(map[string]bool)
 	end := endDate.Add(24 * time.Hour)
@@ -381,7 +497,13 @@ func handleStockKLineCount(c *gin.Context) {
 		req.Count = 1
 	}
 
-	klines, err := safeStockKLine(req.Category, req.Market, req.Code, 0, req.Count, req.Times, req.Adjust)
+	var klines []proto.SecurityBar
+	var err error
+	if isIndexKLineRequest(req.Kind, req.Market, req.Code) {
+		klines, err = safeIndexBars(req.Category, req.Market, req.Code, 0, req.Count)
+	} else {
+		klines, err = safeStockKLine(req.Category, req.Market, req.Code, 0, req.Count, req.Times, req.Adjust)
+	}
 	if err != nil {
 		c.JSON(200, gin.H{
 			"ok":    false,
@@ -421,13 +543,20 @@ func handleStockKLineByDate(c *gin.Context) {
 		req.Times = 1
 	}
 
-	klines, err := StockKLineRange(req.Category, req.Market, req.Code, req.Times, req.Adjust, start, end)
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	var klines []proto.SecurityBar
+	var err2 error
+	asIndex := isIndexKLineRequest(req.Kind, req.Market, req.Code)
+	if asIndex {
+		klines, err2 = IndexKLineRange(req.Category, req.Market, req.Code, start, end)
+	} else {
+		klines, err2 = StockKLineRange(req.Category, req.Market, req.Code, req.Times, req.Adjust, start, end)
+	}
+	if err2 != nil {
+		c.JSON(500, gin.H{"error": err2.Error()})
 		return
 	}
-	log.Printf("[gotdx] stock/kline-by-date %s cat=%d count=%d range=[%s,%s]",
-		req.Code, req.Category, len(klines), req.StartDate, req.EndDate)
+	log.Printf("[gotdx] stock/kline-by-date %s kind=%s cat=%d count=%d range=[%s,%s]",
+		req.Code, map[bool]string{true: symbolKindIndex, false: symbolKindStock}[asIndex], req.Category, len(klines), req.StartDate, req.EndDate)
 
 	resp := make([]stockKLineByDateResponse, len(klines))
 	for i, k := range klines {

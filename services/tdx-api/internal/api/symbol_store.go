@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS symbol_directory (
 	symbol TEXT NOT NULL,
 	description TEXT NOT NULL,
 	exchange TEXT NOT NULL,
+	kind TEXT NOT NULL DEFAULT 'stock',
 	PRIMARY KEY (source, param_kind, param_value, symbol)
 );
 CREATE TABLE IF NOT EXISTS symbol_directory_metadata (
@@ -55,6 +57,13 @@ func newSQLiteSymbolDirectoryStore(path string) (*sqliteSymbolDirectoryStore, er
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize symbol database: %w", err)
 	}
+	// 旧库补 kind 列；已存在则忽略
+	if _, err := db.Exec(`ALTER TABLE symbol_directory ADD COLUMN kind TEXT NOT NULL DEFAULT 'stock'`); err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate symbol directory kind column: %w", err)
+		}
+	}
 	return &sqliteSymbolDirectoryStore{db: db}, nil
 }
 
@@ -75,7 +84,7 @@ func (s *sqliteSymbolDirectoryStore) Load() (symbolDirectorySnapshot, bool, erro
 	}
 
 	rows, err := tx.Query(`
-		SELECT source, param_kind, param_value, symbol, description, exchange
+		SELECT source, param_kind, param_value, symbol, description, exchange, kind
 		FROM symbol_directory
 		ORDER BY rowid`)
 	if err != nil {
@@ -86,11 +95,15 @@ func (s *sqliteSymbolDirectoryStore) Load() (symbolDirectorySnapshot, bool, erro
 		var item symbolSearchItem
 		var paramKind string
 		var paramValue uint8
-		if err := rows.Scan(&item.Source, &paramKind, &paramValue, &item.Symbol, &item.Description, &item.Exchange); err != nil {
+		var kind string
+		if err := rows.Scan(&item.Source, &paramKind, &paramValue, &item.Symbol, &item.Description, &item.Exchange, &kind); err != nil {
 			_ = rows.Close()
 			return symbolDirectorySnapshot{}, false, fmt.Errorf("scan symbol directory: %w", err)
 		}
-		item.Params = map[string]uint8{paramKind: paramValue}
+		if kind == "" {
+			kind = symbolKindStock
+		}
+		item.Params = map[string]any{paramKind: paramValue, "kind": kind}
 		entries = append(entries, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -121,19 +134,19 @@ func (s *sqliteSymbolDirectoryStore) Replace(snapshot symbolDirectorySnapshot) e
 	}
 	stmt, err := tx.Prepare(`
 		INSERT INTO symbol_directory
-			(source, param_kind, param_value, symbol, description, exchange)
-		VALUES (?, ?, ?, ?, ?, ?)`)
+			(source, param_kind, param_value, symbol, description, exchange, kind)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare symbol directory insert: %w", err)
 	}
 	defer stmt.Close()
 
 	for _, item := range snapshot.Entries {
-		paramKind, paramValue, err := symbolDirectoryParam(item.Params)
+		paramKind, paramValue, kind, err := symbolDirectoryParam(item.Params)
 		if err != nil {
 			return err
 		}
-		if _, err := stmt.Exec(item.Source, paramKind, paramValue, item.Symbol, item.Description, item.Exchange); err != nil {
+		if _, err := stmt.Exec(item.Source, paramKind, paramValue, item.Symbol, item.Description, item.Exchange, kind); err != nil {
 			return fmt.Errorf("insert symbol %s: %w", item.Symbol, err)
 		}
 	}
@@ -149,17 +162,59 @@ func (s *sqliteSymbolDirectoryStore) Replace(snapshot symbolDirectorySnapshot) e
 	return nil
 }
 
-func symbolDirectoryParam(params map[string]uint8) (string, uint8, error) {
-	if len(params) != 1 {
-		return "", 0, fmt.Errorf("symbol directory params must contain exactly one entry")
+// symbolDirectoryParam 拆出 SQLite 主键用的 market|category，以及品种 kind
+func symbolDirectoryParam(params map[string]any) (paramKind string, paramValue uint8, kind string, err error) {
+	if params == nil {
+		return "", 0, "", fmt.Errorf("symbol directory params are empty")
 	}
-	for kind, value := range params {
-		if kind != "market" && kind != "category" {
-			return "", 0, fmt.Errorf("unsupported symbol directory param %q", kind)
+	kind = symbolKindStock
+	if k, ok := params["kind"].(string); ok && k != "" {
+		kind = k
+	}
+	for key, value := range params {
+		if key == "kind" {
+			continue
 		}
-		return kind, value, nil
+		if key != "market" && key != "category" {
+			return "", 0, "", fmt.Errorf("unsupported symbol directory param %q", key)
+		}
+		v, ok := anyToUint8(value)
+		if !ok {
+			return "", 0, "", fmt.Errorf("symbol directory param %q must be uint8", key)
+		}
+		if paramKind != "" {
+			return "", 0, "", fmt.Errorf("symbol directory params must contain exactly one market/category entry")
+		}
+		paramKind, paramValue = key, v
 	}
-	return "", 0, fmt.Errorf("symbol directory params are empty")
+	if paramKind == "" {
+		return "", 0, "", fmt.Errorf("symbol directory params must contain market or category")
+	}
+	return paramKind, paramValue, kind, nil
+}
+
+func anyToUint8(v any) (uint8, bool) {
+	switch n := v.(type) {
+	case uint8:
+		return n, true
+	case int:
+		if n < 0 || n > 255 {
+			return 0, false
+		}
+		return uint8(n), true
+	case int64:
+		if n < 0 || n > 255 {
+			return 0, false
+		}
+		return uint8(n), true
+	case float64:
+		if n < 0 || n > 255 || n != float64(uint8(n)) {
+			return 0, false
+		}
+		return uint8(n), true
+	default:
+		return 0, false
+	}
 }
 
 func (s *sqliteSymbolDirectoryStore) Close() error {

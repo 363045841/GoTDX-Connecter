@@ -17,7 +17,9 @@ func main() {
 	}
 
 	gin.SetMode(gin.ReleaseMode)
-	client.Get()
+	if client.Get() == nil {
+		log.Fatal("unable to initialize gotdx client")
+	}
 	router := api.NewRouter()
 	addr := fmt.Sprintf(":%s", port)
 
