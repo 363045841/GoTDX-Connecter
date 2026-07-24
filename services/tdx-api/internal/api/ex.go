@@ -168,10 +168,54 @@ type exKLineByDateRequest struct {
 	Times     uint16 `json:"times"`
 }
 
-func ExKLineRange(category uint8, code string, period uint16, times uint16, startDate, endDate time.Time) ([]proto.ExKLineItem, error) {
-	out := []proto.ExKLineItem{}
+// parseExKLineDateTime 解析扩展行情 DateTime；gotdx 日线为 "2006-01-02 15:04:05"
+func parseExKLineDateTime(value string) (time.Time, error) {
+	layouts := []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	}
+	var lastErr error
+	for _, layout := range layouts {
+		t, err := time.ParseInLocation(layout, value, time.Local)
+		if err == nil {
+			return t, nil
+		}
+		lastErr = err
+	}
+	return time.Time{}, lastErr
+}
+
+// filterExKLineByDate 按日期区间过滤扩展 K 线，去重并升序
+func filterExKLineByDate(klines []proto.ExKLineItem, startDate, endDate time.Time) []proto.ExKLineItem {
+	out := make([]proto.ExKLineItem, 0, len(klines))
 	seen := make(map[string]bool)
 	end := endDate.Add(24 * time.Hour)
+
+	for _, k := range klines {
+		if seen[k.DateTime] {
+			continue
+		}
+		seen[k.DateTime] = true
+		t, err := parseExKLineDateTime(k.DateTime)
+		if err != nil {
+			continue
+		}
+		if (t.Equal(startDate) || t.After(startDate)) && t.Before(end) {
+			out = append(out, k)
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		ti, _ := parseExKLineDateTime(out[i].DateTime)
+		tj, _ := parseExKLineDateTime(out[j].DateTime)
+		return ti.Before(tj)
+	})
+	return out
+}
+
+func ExKLineRange(category uint8, code string, period uint16, times uint16, startDate, endDate time.Time) ([]proto.ExKLineItem, error) {
+	out := []proto.ExKLineItem{}
 
 	for start := uint32(0); ; start += uint32(klinePageSize) {
 		klines, err := safeExKLine(category, code, period, uint32(start), klinePageSize, times)
@@ -182,31 +226,15 @@ func ExKLineRange(category uint8, code string, period uint16, times uint16, star
 			break
 		}
 
-		for _, k := range klines {
-			if seen[k.DateTime] {
-				continue
-			}
-			seen[k.DateTime] = true
-			t, err := time.ParseInLocation("2006-01-02", k.DateTime, time.Local)
-			if err != nil {
-				continue
-			}
-			if (t.Equal(startDate) || t.After(startDate)) && t.Before(end) {
-				out = append(out, k)
-			}
-		}
+		out = append(out, filterExKLineByDate(klines, startDate, endDate)...)
 
 		if len(klines) < int(klinePageSize) {
 			break
 		}
 	}
 
-	sort.Slice(out, func(i, j int) bool {
-		ti, _ := time.ParseInLocation("2006-01-02", out[i].DateTime, time.Local)
-		tj, _ := time.ParseInLocation("2006-01-02", out[j].DateTime, time.Local)
-		return ti.Before(tj)
-	})
-	return out, nil
+	// 分页后再次去重排序，避免跨页重复
+	return filterExKLineByDate(out, startDate, endDate), nil
 }
 
 type exKLineByDateResponse struct {
