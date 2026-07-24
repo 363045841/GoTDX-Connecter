@@ -403,21 +403,52 @@ func safeExKLine(category uint8, code string, period uint16, start uint32, count
 	return tryExKLine(category, code, period, start, count, times)
 }
 
-func StockKLineRange(category uint16, market uint8, code string, times uint16, adjust uint16, startDate, endDate time.Time) ([]proto.SecurityBar, error) {
-	return stockOrIndexKLineRange(category, market, code, times, adjust, startDate, endDate, false)
-}
-
 // indexPageSize GetIndexBars 单次请求上限，保持在已验证的 800 条以内
 const indexPageSize uint16 = 798
 
-// IndexKLineRange 按 GetIndexBars 获取指数 K 线并按日期过滤
-// GetIndexBars 不支持 start>0 分页，因此只请求一页 count=indexPageSize
-func IndexKLineRange(category uint16, market uint8, code string, startDate, endDate time.Time) ([]proto.SecurityBar, error) {
-	klines, err := safeIndexBars(category, market, code, 0, indexPageSize)
+// fetchStockKLinePage / fetchIndexBarsPage 可测注入点；生产默认走 safe*
+var (
+	fetchStockKLinePage = safeStockKLine
+	fetchIndexBarsPage  = safeIndexBars
+)
+
+func securityBarOldest(k proto.SecurityBar) (time.Time, bool) {
+	return k.DateTime, !k.DateTime.IsZero()
+}
+
+// StockKLineRange 按 StockKLine 分页拉取 A 股 K 线并按日期过滤
+func StockKLineRange(category uint16, market uint8, code string, times uint16, adjust uint16, startDate, endDate time.Time) ([]proto.SecurityBar, error) {
+	raw, err := paginateFromRecent(klinePageSize, func(start uint32, count uint16) ([]proto.SecurityBar, error) {
+		s, ok := clampUint16Start(start)
+		if !ok {
+			return nil, nil
+		}
+		return fetchStockKLinePage(category, market, code, s, count, times, adjust)
+	}, securityBarOldest, startDate, false)
 	if err != nil {
 		return nil, err
 	}
-	return filterKLineByDate(klines, startDate, endDate, true), nil
+	return filterKLineByDate(raw, startDate, endDate, true), nil
+}
+
+// IndexKLineRange 按 GetIndexBars 分页拉取指数 K 线并按日期过滤
+// 深页偶发 gotdx invalid kline datetime：先缩 count 再试，仍失败且已有数据则截断
+func IndexKLineRange(category uint16, market uint8, code string, startDate, endDate time.Time) ([]proto.SecurityBar, error) {
+	raw, err := paginateFromRecent(indexPageSize, func(start uint32, count uint16) ([]proto.SecurityBar, error) {
+		s, ok := clampUint16Start(start)
+		if !ok {
+			return nil, nil
+		}
+		klines, err := fetchIndexBarsPage(category, market, code, s, count)
+		if err != nil && count > indexFallbackPageSize {
+			return fetchIndexBarsPage(category, market, code, s, indexFallbackPageSize)
+		}
+		return klines, err
+	}, securityBarOldest, startDate, true)
+	if err != nil {
+		return nil, err
+	}
+	return filterKLineByDate(raw, startDate, endDate, true), nil
 }
 
 func filterKLineByDate(klines []proto.SecurityBar, startDate, endDate time.Time, dedup bool) []proto.SecurityBar {
@@ -442,46 +473,6 @@ func filterKLineByDate(klines []proto.SecurityBar, startDate, endDate time.Time,
 		return out[i].DateTime.Before(out[j].DateTime)
 	})
 	return out
-}
-
-func stockOrIndexKLineRange(category uint16, market uint8, code string, times uint16, adjust uint16, startDate, endDate time.Time, asIndex bool) ([]proto.SecurityBar, error) {
-	if asIndex {
-		return IndexKLineRange(category, market, code, startDate, endDate)
-	}
-
-	out := []proto.SecurityBar{}
-	seen := make(map[string]bool)
-	end := endDate.Add(24 * time.Hour)
-
-	for start := uint16(0); ; start += klinePageSize {
-		klines, err := safeStockKLine(category, market, code, start, klinePageSize, times, adjust)
-		if err != nil {
-			return nil, err
-		}
-		if len(klines) == 0 {
-			break
-		}
-
-		for _, k := range klines {
-			key := fmt.Sprintf("%d-%02d-%02dT%02d:%02d", k.Year, k.Month, k.Day, k.Hour, k.Minute)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			if (k.DateTime.Equal(startDate) || k.DateTime.After(startDate)) && k.DateTime.Before(end) {
-				out = append(out, k)
-			}
-		}
-
-		if len(klines) < int(klinePageSize) {
-			break
-		}
-	}
-
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].DateTime.Before(out[j].DateTime)
-	})
-	return out, nil
 }
 
 func handleStockKLineCount(c *gin.Context) {
