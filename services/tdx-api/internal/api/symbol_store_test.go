@@ -22,7 +22,7 @@ func TestSQLiteSymbolDirectoryStorePersistsAndReplacesSnapshot(t *testing.T) {
 	first := symbolDirectorySnapshot{
 		Entries: []symbolSearchItem{{
 			Symbol: "000001", Description: "Ping An", Exchange: "SZ", Source: "gotdx",
-			Params: map[string]uint8{"market": 0},
+			Params: map[string]any{"market": uint8(0), "kind": "stock"},
 		}},
 		LoadedAt: time.Unix(1_700_000_000, 0).UTC(),
 	}
@@ -46,7 +46,7 @@ func TestSQLiteSymbolDirectoryStorePersistsAndReplacesSnapshot(t *testing.T) {
 	second := symbolDirectorySnapshot{
 		Entries: []symbolSearchItem{{
 			Symbol: "00700", Description: "Tencent", Exchange: "HK", Source: "gotdx",
-			Params: map[string]uint8{"category": 7},
+			Params: map[string]any{"category": uint8(7), "kind": "ex"},
 		}},
 		LoadedAt: first.LoadedAt.Add(time.Hour),
 	}
@@ -69,7 +69,7 @@ func TestSQLiteSymbolDirectoryStorePreservesSnapshotWhenReplacementFails(t *test
 	first := symbolDirectorySnapshot{
 		Entries: []symbolSearchItem{{
 			Symbol: "000001", Description: "Ping An", Exchange: "SZ", Source: "gotdx",
-			Params: map[string]uint8{"market": 0},
+			Params: map[string]any{"market": uint8(0), "kind": "stock"},
 		}},
 		LoadedAt: time.Unix(1_700_000_000, 0).UTC(),
 	}
@@ -88,7 +88,7 @@ func TestSQLiteSymbolDirectoryStorePreservesSnapshotWhenReplacementFails(t *test
 	failed := symbolDirectorySnapshot{
 		Entries: []symbolSearchItem{{
 			Symbol: "FAIL", Description: "Failure", Exchange: "SZ", Source: "gotdx",
-			Params: map[string]uint8{"market": 0},
+			Params: map[string]any{"market": uint8(0), "kind": "stock"},
 		}},
 		LoadedAt: first.LoadedAt.Add(time.Hour),
 	}
@@ -128,7 +128,7 @@ func TestSQLiteSymbolDirectoryStoreWaitsForConcurrentWriter(t *testing.T) {
 		done <- secondStore.Replace(symbolDirectorySnapshot{
 			Entries: []symbolSearchItem{{
 				Symbol: "000001", Description: "Ping An", Exchange: "SZ", Source: "gotdx",
-				Params: map[string]uint8{"market": 0},
+				Params: map[string]any{"market": uint8(0), "kind": "stock"},
 			}},
 			LoadedAt: time.Unix(2, 0).UTC(),
 		})
@@ -164,14 +164,14 @@ func TestSQLiteSymbolDirectoryStoreLoadsConsistentSnapshotDuringReplacement(t *t
 		{
 			Entries: []symbolSearchItem{{
 				Symbol: "A", Description: "Version A", Exchange: "SZ", Source: "gotdx",
-				Params: map[string]uint8{"market": 0},
+				Params: map[string]any{"market": uint8(0), "kind": "stock"},
 			}},
 			LoadedAt: time.Unix(1, 0).UTC(),
 		},
 		{
 			Entries: []symbolSearchItem{{
 				Symbol: "B", Description: "Version B", Exchange: "SH", Source: "gotdx",
-				Params: map[string]uint8{"market": 1},
+				Params: map[string]any{"market": uint8(1), "kind": "index"},
 			}},
 			LoadedAt: time.Unix(2, 0).UTC(),
 		},

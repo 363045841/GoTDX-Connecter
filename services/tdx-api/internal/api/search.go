@@ -10,7 +10,15 @@ import (
 
 	"KlineChartQuantGo/services/tdx-api/internal/client"
 	"github.com/bensema/gotdx/proto"
+	"github.com/bensema/gotdx/types"
 	"github.com/gin-gonic/gin"
+)
+
+// 搜索结果 params.kind：与 gotdx types 品种分类对齐，供 K 线路由使用
+const (
+	symbolKindStock = "stock"
+	symbolKindIndex = "index"
+	symbolKindEx    = "ex"
 )
 
 const (
@@ -42,11 +50,12 @@ func (gotdxSymbolDirectoryLoader) ExList(start uint32, count uint16) ([]proto.Ex
 }
 
 type symbolSearchItem struct {
-	Symbol      string           `json:"symbol"`
-	Description string           `json:"description"`
-	Exchange    string           `json:"exchange"`
-	Source      string           `json:"source"`
-	Params      map[string]uint8 `json:"params"`
+	Symbol      string         `json:"symbol"`
+	Description string         `json:"description"`
+	Exchange    string         `json:"exchange"`
+	Source      string         `json:"source"`
+	// Params 含 market|category 与 kind（stock|index|ex），前端原样带回拉 K 线
+	Params map[string]any `json:"params"`
 }
 
 type symbolDirectoryCache struct {
@@ -160,9 +169,13 @@ func (c *symbolDirectoryCache) loadDirectory() ([]symbolSearchItem, error) {
 			return nil, err
 		}
 		for _, stock := range stocks {
+			exchange := mainExchange(market)
 			item := symbolSearchItem{
-				Symbol: stock.Code, Description: stock.Name, Exchange: mainExchange(market), Source: "gotdx",
-				Params: map[string]uint8{"market": market},
+				Symbol: stock.Code, Description: stock.Name, Exchange: exchange, Source: "gotdx",
+				Params: map[string]any{
+					"market": market,
+					"kind":   mainMarketSymbolKind(stock.Code, exchange),
+				},
 			}
 			appendUniqueSymbol(&entries, seen, "market", market, item)
 		}
@@ -184,7 +197,10 @@ func (c *symbolDirectoryCache) loadDirectory() ([]symbolSearchItem, error) {
 		for _, ex := range items {
 			item := symbolSearchItem{
 				Symbol: ex.Code, Description: ex.Name, Exchange: extendedExchange(ex.Market), Source: "gotdx",
-				Params: map[string]uint8{"category": ex.Category},
+				Params: map[string]any{
+					"category": ex.Category,
+					"kind":     symbolKindEx,
+				},
 			}
 			appendUniqueSymbol(&entries, seen, "category", ex.Category, item)
 		}
@@ -233,6 +249,15 @@ func mainExchange(market uint8) string {
 	default:
 		return fmt.Sprintf("CN-%d", market)
 	}
+}
+
+// mainMarketSymbolKind 用 gotdx types.IsIndex(code.EXCHANGE) 判定主市场品种
+func mainMarketSymbolKind(code, exchange string) string {
+	// IsIndex 要求 9 位形如 000001.SH
+	if types.IsIndex(fmt.Sprintf("%s.%s", code, strings.ToUpper(exchange))) {
+		return symbolKindIndex
+	}
+	return symbolKindStock
 }
 
 func extendedExchange(market uint8) string {

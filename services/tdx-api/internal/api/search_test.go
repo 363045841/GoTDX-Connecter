@@ -89,7 +89,7 @@ func TestSymbolDirectoryCacheUsesFreshPersistedSnapshot(t *testing.T) {
 	store := &fakeSymbolDirectoryStore{snapshot: symbolDirectorySnapshot{
 		Entries: []symbolSearchItem{{
 			Symbol: "000001", Description: "Ping An", Exchange: "SZ", Source: "gotdx",
-			Params: map[string]uint8{"market": 0},
+			Params: map[string]any{"market": uint8(0), "kind": "stock"},
 		}},
 		LoadedAt: now.Add(-time.Hour),
 	}, found: true}
@@ -111,7 +111,7 @@ func TestSymbolDirectoryCacheUsesStalePersistedSnapshotWhenRefreshFails(t *testi
 	store := &fakeSymbolDirectoryStore{snapshot: symbolDirectorySnapshot{
 		Entries: []symbolSearchItem{{
 			Symbol: "000001", Description: "Ping An", Exchange: "SZ", Source: "gotdx",
-			Params: map[string]uint8{"market": 0},
+			Params: map[string]any{"market": uint8(0), "kind": "stock"},
 		}},
 		LoadedAt: now.Add(-25 * time.Hour),
 	}, found: true}
@@ -258,7 +258,7 @@ func TestSymbolSearchReturnsGotdxMetadataAndDeduplicates(t *testing.T) {
 		Description: "Ping An Bank",
 		Exchange:    "SZ",
 		Source:      "gotdx",
-		Params:      map[string]uint8{"market": 0},
+		Params:      map[string]any{"market": uint8(0), "kind": symbolKindStock},
 	}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("main item = %#v, want %#v", got, want)
 	}
@@ -275,7 +275,7 @@ func TestSymbolSearchReturnsGotdxMetadataAndDeduplicates(t *testing.T) {
 		Description: "Tencent",
 		Exchange:    "HK",
 		Source:      "gotdx",
-		Params:      map[string]uint8{"category": 7},
+		Params:      map[string]any{"category": uint8(7), "kind": symbolKindEx},
 	}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("extended item = %#v, want %#v", got, want)
 	}
