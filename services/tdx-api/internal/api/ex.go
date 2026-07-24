@@ -214,27 +214,26 @@ func filterExKLineByDate(klines []proto.ExKLineItem, startDate, endDate time.Tim
 	return out
 }
 
-func ExKLineRange(category uint8, code string, period uint16, times uint16, startDate, endDate time.Time) ([]proto.ExKLineItem, error) {
-	out := []proto.ExKLineItem{}
+// fetchExKLinePage 可测注入点；生产默认走 safeExKLine
+var fetchExKLinePage = safeExKLine
 
-	for start := uint32(0); ; start += uint32(klinePageSize) {
-		klines, err := safeExKLine(category, code, period, uint32(start), klinePageSize, times)
-		if err != nil {
-			return nil, err
-		}
-		if len(klines) == 0 {
-			break
-		}
-
-		out = append(out, filterExKLineByDate(klines, startDate, endDate)...)
-
-		if len(klines) < int(klinePageSize) {
-			break
-		}
+func exKLineOldest(k proto.ExKLineItem) (time.Time, bool) {
+	t, err := parseExKLineDateTime(k.DateTime)
+	if err != nil {
+		return time.Time{}, false
 	}
+	return t, true
+}
 
-	// 分页后再次去重排序，避免跨页重复
-	return filterExKLineByDate(out, startDate, endDate), nil
+// ExKLineRange 按 ExKLine 分页拉取扩展行情并按日期过滤
+func ExKLineRange(category uint8, code string, period uint16, times uint16, startDate, endDate time.Time) ([]proto.ExKLineItem, error) {
+	raw, err := paginateFromRecent(klinePageSize, func(start uint32, count uint16) ([]proto.ExKLineItem, error) {
+		return fetchExKLinePage(category, code, period, start, count, times)
+	}, exKLineOldest, startDate, false)
+	if err != nil {
+		return nil, err
+	}
+	return filterExKLineByDate(raw, startDate, endDate), nil
 }
 
 type exKLineByDateResponse struct {
