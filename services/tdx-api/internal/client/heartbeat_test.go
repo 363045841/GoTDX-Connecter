@@ -90,7 +90,7 @@ func TestRunHeartbeatStopsWhenContextIsCancelled(t *testing.T) {
 	monitor := newHeartbeatMonitor(3, func() error { return nil }, func() error { return nil })
 
 	go func() {
-		runHeartbeat(ctx, ticks, monitor)
+		runHeartbeat(ctx, ticks, monitor, func() {})
 		close(done)
 	}()
 	cancel()
@@ -104,10 +104,10 @@ func TestRunHeartbeatStopsWhenContextIsCancelled(t *testing.T) {
 
 func TestStartHeartbeatRejectsInvalidConfiguration(t *testing.T) {
 	ctx := context.Background()
-	if err := StartHeartbeat(ctx, 0, 3); err == nil {
+	if _, err := StartHeartbeat(ctx, 0, 3); err == nil {
 		t.Fatal("StartHeartbeat accepted zero interval")
 	}
-	if err := StartHeartbeat(ctx, time.Second, 0); err == nil {
+	if _, err := StartHeartbeat(ctx, time.Second, 0); err == nil {
 		t.Fatal("StartHeartbeat accepted zero failure threshold")
 	}
 }

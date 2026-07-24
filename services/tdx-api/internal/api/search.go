@@ -38,22 +38,22 @@ type symbolDirectoryLoader interface {
 type gotdxSymbolDirectoryLoader struct{}
 
 func (gotdxSymbolDirectoryLoader) StockAll(market uint8) ([]proto.Security, error) {
-	return client.Get().StockAll(market)
+	return mainCall(func(c client.MainQuerier) ([]proto.Security, error) { return c.StockAll(market) })
 }
 
 func (gotdxSymbolDirectoryLoader) ExCount() (uint32, error) {
-	return client.Get().ExCount()
+	return exCall(func(c client.ExQuerier) (uint32, error) { return c.ExCount() })
 }
 
 func (gotdxSymbolDirectoryLoader) ExList(start uint32, count uint16) ([]proto.ExListItem, error) {
-	return client.Get().ExList(start, count)
+	return exCall(func(c client.ExQuerier) ([]proto.ExListItem, error) { return c.ExList(start, count) })
 }
 
 type symbolSearchItem struct {
-	Symbol      string         `json:"symbol"`
-	Description string         `json:"description"`
-	Exchange    string         `json:"exchange"`
-	Source      string         `json:"source"`
+	Symbol      string `json:"symbol"`
+	Description string `json:"description"`
+	Exchange    string `json:"exchange"`
+	Source      string `json:"source"`
 	// Params 含 market|category 与 kind（stock|index|ex），前端原样带回拉 K 线
 	Params map[string]any `json:"params"`
 }

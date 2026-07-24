@@ -77,7 +77,9 @@ func handleStockQuotes(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "markets and codes are required"})
 		return
 	}
-	stocks, err := client.Get().StockQuotesDetail(req.Markets, req.Codes)
+	stocks, err := mainCall(func(c client.MainQuerier) ([]proto.SecurityQuote, error) {
+		return c.StockQuotesDetail(req.Markets, req.Codes)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -91,7 +93,9 @@ func handleStockKLine(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	klines, err := client.Get().StockKLine(req.Category, req.Market, req.Code, req.Start, req.Count, req.Times, req.Adjust)
+	klines, err := mainCall(func(c client.MainQuerier) ([]proto.SecurityBar, error) {
+		return c.StockKLine(req.Category, req.Market, req.Code, req.Start, req.Count, req.Times, req.Adjust)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -111,32 +115,14 @@ func handleStockTick(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	tick, err := client.Get().StockTickChart(req.Market, req.Code, req.Start, req.Count)
+	tick, err := mainCall(func(c client.MainQuerier) ([]proto.MinuteTimeData, error) {
+		return c.StockTickChart(req.Market, req.Code, req.Start, req.Count)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(200, tick)
-}
-
-func retryWithReprobe[T any](fn func() (T, error)) (T, error) {
-	const maxRetries = 3
-	var lastErr error
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		result, err := fn()
-		if err == nil {
-			return result, nil
-		}
-		lastErr = err
-		if attempt < maxRetries {
-			log.Printf("[gotdx] 第%d次重试 (error: %v), re-probing hosts...", attempt, err)
-			if rpErr := client.Reprobe(); rpErr != nil {
-				log.Printf("[gotdx] re-probe failed: %v", rpErr)
-			}
-		}
-	}
-	var zero T
-	return zero, fmt.Errorf("all %d retries failed: %w", maxRetries, lastErr)
 }
 
 type stockHistoryTickItem struct {
@@ -152,8 +138,8 @@ func handleStockHistoryTick(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	tick, err := retryWithReprobe(func() ([]proto.HistoryMinuteTimeData, error) {
-		return client.Get().StockHistoryTickChart(req.Date, req.Market, req.Code)
+	tick, err := mainCall(func(c client.MainQuerier) ([]proto.HistoryMinuteTimeData, error) {
+		return c.StockHistoryTickChart(req.Date, req.Market, req.Code)
 	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
@@ -167,7 +153,9 @@ func handleStockHistoryTick(c *gin.Context) {
 
 	var first *stockHistoryTickItem
 	if len(tick) > 0 {
-		if trans, err := client.Get().StockHistoryFullTransaction(req.Date, req.Market, req.Code); err == nil && len(trans) > 0 {
+		if trans, err := mainCall(func(c client.MainQuerier) ([]proto.HistoryTransactionData, error) {
+			return c.StockHistoryFullTransaction(req.Date, req.Market, req.Code)
+		}); err == nil && len(trans) > 0 {
 			first = &stockHistoryTickItem{
 				Timestamp: base.Add(9*time.Hour + 30*time.Minute).Format("2006-01-02T15:04:05+08:00"),
 				Price:     trans[0].Price,
@@ -208,7 +196,9 @@ func handleStockList(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	stocks, err := client.Get().StockList(req.Market, req.Start, req.Count)
+	stocks, err := mainCall(func(c client.MainQuerier) ([]proto.Security, error) {
+		return c.StockList(req.Market, req.Start, req.Count)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -222,7 +212,7 @@ func handleStockCount(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	count, err := client.Get().StockCount(req.Market)
+	count, err := mainCall(func(c client.MainQuerier) (uint16, error) { return c.StockCount(req.Market) })
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -236,7 +226,9 @@ func handleStockIndexInfo(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	info, err := client.Get().StockIndexInfo(req.Market, req.Code)
+	info, err := mainCall(func(c client.MainQuerier) (*proto.GetIndexInfoReply, error) {
+		return c.StockIndexInfo(req.Market, req.Code)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -250,7 +242,9 @@ func handleStockTransaction(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().StockTransaction(req.Market, req.Code, req.Start, req.Count)
+	data, err := mainCall(func(c client.MainQuerier) ([]proto.TransactionData, error) {
+		return c.StockTransaction(req.Market, req.Code, req.Start, req.Count)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -264,7 +258,9 @@ func handleStockHistoryTransaction(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().StockHistoryTransaction(req.Date, req.Market, req.Code, req.Start, req.Count)
+	data, err := mainCall(func(c client.MainQuerier) ([]proto.HistoryTransactionData, error) {
+		return c.StockHistoryTransaction(req.Date, req.Market, req.Code, req.Start, req.Count)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -300,7 +296,9 @@ func tryStockKLine(category uint16, market uint8, code string, start uint16, cou
 			err = fmt.Errorf("StockKLine panic: %v", r)
 		}
 	}()
-	return client.Get().StockKLine(category, market, code, start, count, times, adjust)
+	return mainCall(func(c client.MainQuerier) ([]proto.SecurityBar, error) {
+		return c.StockKLine(category, market, code, start, count, times, adjust)
+	})
 }
 
 // tryIndexBars 拉指数 K 线并映射为 SecurityBar，供与股票接口共用按日筛选
@@ -310,7 +308,9 @@ func tryIndexBars(category uint16, market uint8, code string, start uint16, coun
 			err = fmt.Errorf("GetIndexBars panic: %v", r)
 		}
 	}()
-	reply, err := client.Get().GetIndexBars(category, market, code, start, count)
+	reply, err := mainCall(func(c client.MainQuerier) (*proto.GetIndexBarsReply, error) {
+		return c.GetIndexBars(category, market, code, start, count)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -364,7 +364,9 @@ func tryExKLine(category uint8, code string, period uint16, start uint32, count 
 			err = fmt.Errorf("ExKLine panic: %v", r)
 		}
 	}()
-	return client.Get().ExKLine(category, code, period, start, count, times)
+	return exCall(func(c client.ExQuerier) ([]proto.ExKLineItem, error) {
+		return c.ExKLine(category, code, period, start, count, times)
+	})
 }
 
 func safeStockKLine(category uint16, market uint8, code string, start uint16, count uint16, times uint16, adjust uint16) ([]proto.SecurityBar, error) {
@@ -372,11 +374,7 @@ func safeStockKLine(category uint16, market uint8, code string, start uint16, co
 	if err == nil {
 		return klines, nil
 	}
-	log.Printf("[gotdx] StockKLine failed (%v), re-probing hosts and retrying...", err)
-	if rpErr := client.Reprobe(); rpErr != nil {
-		return nil, fmt.Errorf("re-probe failed: %w (original: %v)", rpErr, err)
-	}
-	return tryStockKLine(category, market, code, start, count, times, adjust)
+	return nil, err
 }
 
 func safeIndexBars(category uint16, market uint8, code string, start uint16, count uint16) ([]proto.SecurityBar, error) {
@@ -384,11 +382,7 @@ func safeIndexBars(category uint16, market uint8, code string, start uint16, cou
 	if err == nil {
 		return klines, nil
 	}
-	log.Printf("[gotdx] GetIndexBars failed (%v), re-probing hosts and retrying...", err)
-	if rpErr := client.Reprobe(); rpErr != nil {
-		return nil, fmt.Errorf("re-probe failed: %w (original: %v)", rpErr, err)
-	}
-	return tryIndexBars(category, market, code, start, count)
+	return nil, err
 }
 
 func safeExKLine(category uint8, code string, period uint16, start uint32, count uint16, times uint16) ([]proto.ExKLineItem, error) {
@@ -396,11 +390,7 @@ func safeExKLine(category uint8, code string, period uint16, start uint32, count
 	if err == nil {
 		return klines, nil
 	}
-	log.Printf("[gotdx] ExKLine failed (%v), re-probing hosts and retrying...", err)
-	if rpErr := client.Reprobe(); rpErr != nil {
-		return nil, fmt.Errorf("re-probe failed: %w (original: %v)", rpErr, err)
-	}
-	return tryExKLine(category, code, period, start, count, times)
+	return nil, err
 }
 
 func StockKLineRange(category uint16, market uint8, code string, times uint16, adjust uint16, startDate, endDate time.Time) ([]proto.SecurityBar, error) {

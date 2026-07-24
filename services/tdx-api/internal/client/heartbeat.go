@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log"
 	"time"
+
+	"github.com/bensema/gotdx/proto"
 )
 
 const (
@@ -46,34 +48,44 @@ func (monitor *heartbeatMonitor) check() {
 	monitor.consecutiveFailures = 0
 }
 
-func runHeartbeat(ctx context.Context, ticks <-chan time.Time, monitor *heartbeatMonitor) {
+func runHeartbeat(ctx context.Context, ticks <-chan time.Time, monitor *heartbeatMonitor, maintain func()) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticks:
 			monitor.check()
+			maintain()
 		}
 	}
 }
 
 // StartHeartbeat 启动 main 行情连接的定时保活，连续失败达到阈值后重新探测连接。
-func StartHeartbeat(ctx context.Context, interval time.Duration, failureThreshold int) error {
+func StartHeartbeat(ctx context.Context, interval time.Duration, failureThreshold int) (<-chan struct{}, error) {
 	if interval <= 0 {
-		return errors.New("heartbeat interval must be positive")
+		return nil, errors.New("heartbeat interval must be positive")
 	}
 	if failureThreshold <= 0 {
-		return errors.New("heartbeat failure threshold must be positive")
+		return nil, errors.New("heartbeat failure threshold must be positive")
 	}
 
+	manager := DefaultManager()
+	var failedGeneration uint64
 	monitor := newHeartbeatMonitor(failureThreshold, func() error {
-		_, err := Get().GetServerHeartbeat()
+		failedGeneration = manager.generation(DomainMain)
+		_, err := ProbeMain(func(c MainQuerier) (*proto.HeartBeatReply, error) {
+			return c.GetServerHeartbeat()
+		})
 		return err
-	}, ReprobeMain)
+	}, func() error { return manager.reconnectGeneration(DomainMain, failedGeneration) })
 	ticker := time.NewTicker(interval)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		defer ticker.Stop()
-		runHeartbeat(ctx, ticker.C, monitor)
+		runHeartbeat(ctx, ticker.C, monitor, func() {
+			manager.recoverUnready(DomainEx, DomainMAC)
+		})
 	}()
-	return nil
+	return done, nil
 }

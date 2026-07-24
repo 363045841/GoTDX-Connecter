@@ -82,7 +82,9 @@ func handleMACBoardList(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().MACBoardList(req.BoardType, req.Count)
+	data, err := macCall(func(c client.MACQuerier) ([]proto.MACBoardListItem, error) {
+		return c.MACBoardList(req.BoardType, req.Count)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -96,7 +98,9 @@ func handleMACBoardMembers(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().MACBoardMembers(req.BoardSymbol, req.Count)
+	data, err := macCall(func(c client.MACQuerier) ([]proto.MACBoardMemberItem, error) {
+		return c.MACBoardMembers(req.BoardSymbol, req.Count)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -110,7 +114,9 @@ func handleMACBoardMembersQuotes(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().MACBoardMembersQuotes(req.BoardSymbol, req.Count)
+	data, err := macCall(func(c client.MACQuerier) ([]proto.MACBoardMemberQuoteItem, error) {
+		return c.MACBoardMembersQuotes(req.BoardSymbol, req.Count)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -124,7 +130,9 @@ func handleMACBoardMembersQuotesDynamic(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().MACBoardMembersQuotesDynamic(req.BoardSymbol, req.Count, req.SortType, req.SortOrder, gotdx.DefaultMACBoardMembersQuotesFieldBitmap())
+	data, err := macCall(func(c client.MACQuerier) (*proto.MACBoardMembersQuotesDynamicReply, error) {
+		return c.MACBoardMembersQuotesDynamic(req.BoardSymbol, req.Count, req.SortType, req.SortOrder, gotdx.DefaultMACBoardMembersQuotesFieldBitmap())
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -142,7 +150,9 @@ func handleMACSymbolQuotes(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "codes are required"})
 		return
 	}
-	data, err := client.Get().MACSymbolQuotes(req.Markets, req.Codes, gotdx.DefaultMACSymbolQuotesFieldBitmap())
+	data, err := macCall(func(c client.MACQuerier) (*proto.MACSymbolQuotesReply, error) {
+		return c.MACSymbolQuotes(req.Markets, req.Codes, gotdx.DefaultMACSymbolQuotesFieldBitmap())
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -156,7 +166,7 @@ func handleMACQuotes(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().MACQuotes(req.Market, req.Code)
+	data, err := macCall(func(c client.MACQuerier) (*proto.MACQuotesReply, error) { return c.MACQuotes(req.Market, req.Code) })
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -170,7 +180,9 @@ func handleMACTransactions(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().MACTransactions(req.Market, req.Code, req.Start, req.Count)
+	data, err := macCall(func(c client.MACQuerier) ([]proto.MACTransactionItem, error) {
+		return c.MACTransactions(req.Market, req.Code, req.Start, req.Count)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -184,7 +196,9 @@ func handleMACAuction(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().MACAuction(req.Market, req.Code, req.Start, req.Count)
+	data, err := macCall(func(c client.MACQuerier) ([]proto.MACAuctionItem, error) {
+		return c.MACAuction(req.Market, req.Code, req.Start, req.Count)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -198,7 +212,9 @@ func handleMACTickCharts(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().MACTickCharts(req.Market, req.Code, req.QueryDate, req.Days)
+	data, err := macCall(func(c client.MACQuerier) (*proto.MACTickChartsReply, error) {
+		return c.MACTickCharts(req.Market, req.Code, req.QueryDate, req.Days)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -212,7 +228,9 @@ func handleMACSymbolInfo(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().MACSymbolInfo(req.Market, req.Code)
+	data, err := macCall(func(c client.MACQuerier) (*proto.MACSymbolInfoReply, error) {
+		return c.MACSymbolInfo(req.Market, req.Code)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -226,7 +244,9 @@ func handleMACCapitalFlow(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().MACCapitalFlow(req.Market, req.Code)
+	data, err := macCall(func(c client.MACQuerier) (*proto.MACCapitalFlowReply, error) {
+		return c.MACCapitalFlow(req.Market, req.Code)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -240,7 +260,9 @@ func handleMACMarketMonitor(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().MACMarketMonitor(req.Market, req.Start, req.Count)
+	data, err := macCall(func(c client.MACQuerier) ([]proto.MACMarketMonitorItem, error) {
+		return c.MACMarketMonitor(req.Market, req.Start, req.Count)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -257,8 +279,8 @@ type macServerInfoResp struct {
 }
 
 func handleMACServerInfo(c *gin.Context) {
-	info, err := retryWithReprobe(func() (*proto.MACServerInfoReply, error) {
-		return client.Get().MACServerInfo()
+	info, err := macCall(func(c client.MACQuerier) (*proto.MACServerInfoReply, error) {
+		return c.MACServerInfo()
 	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})

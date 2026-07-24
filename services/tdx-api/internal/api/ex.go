@@ -48,7 +48,7 @@ type exHistoryTransactionRequest struct {
 }
 
 func handleExCount(c *gin.Context) {
-	count, err := client.Get().ExCount()
+	count, err := exCall(func(c client.ExQuerier) (uint32, error) { return c.ExCount() })
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -62,7 +62,7 @@ func handleExList(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().ExList(req.Start, req.Count)
+	data, err := exCall(func(c client.ExQuerier) ([]proto.ExListItem, error) { return c.ExList(req.Start, req.Count) })
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -76,7 +76,7 @@ func handleExQuote(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().ExQuote(req.Category, req.Code)
+	data, err := exCall(func(c client.ExQuerier) (*proto.ExQuoteItem, error) { return c.ExQuote(req.Category, req.Code) })
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -94,7 +94,7 @@ func handleExQuotes(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "categories and codes are required"})
 		return
 	}
-	data, err := client.Get().ExQuotes(req.Categories, req.Codes)
+	data, err := exCall(func(c client.ExQuerier) ([]proto.ExQuoteItem, error) { return c.ExQuotes(req.Categories, req.Codes) })
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -108,7 +108,9 @@ func handleExKLine(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	klines, err := client.Get().ExKLine(req.Category, req.Code, req.Period, req.Start, req.Count, req.Times)
+	klines, err := exCall(func(c client.ExQuerier) ([]proto.ExKLineItem, error) {
+		return c.ExKLine(req.Category, req.Code, req.Period, req.Start, req.Count, req.Times)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -122,7 +124,9 @@ func handleExTick(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	tick, err := client.Get().ExTickChart(req.Category, req.Code, req.Date)
+	tick, err := exCall(func(c client.ExQuerier) ([]proto.ExTickChartData, error) {
+		return c.ExTickChart(req.Category, req.Code, req.Date)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -136,7 +140,9 @@ func handleExHistoryTransaction(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().ExHistoryTransaction(req.Date, req.Category, req.Code)
+	data, err := exCall(func(c client.ExQuerier) ([]proto.ExHistoryTransactionItem, error) {
+		return c.ExHistoryTransaction(req.Date, req.Category, req.Code)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -145,7 +151,7 @@ func handleExHistoryTransaction(c *gin.Context) {
 }
 
 func handleExTable(c *gin.Context) {
-	data, err := client.Get().ExTable()
+	data, err := exCall(func(c client.ExQuerier) (string, error) { return c.ExTable() })
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
