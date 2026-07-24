@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -19,6 +20,11 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	if client.Get() == nil {
 		log.Fatal("unable to initialize gotdx client")
+	}
+	heartbeatContext, stopHeartbeat := context.WithCancel(context.Background())
+	defer stopHeartbeat()
+	if err := client.StartHeartbeat(heartbeatContext, client.DefaultHeartbeatInterval, client.DefaultHeartbeatFailureThreshold); err != nil {
+		log.Fatalf("unable to start gotdx heartbeat: %v", err)
 	}
 	router := api.NewRouter()
 	addr := fmt.Sprintf(":%s", port)

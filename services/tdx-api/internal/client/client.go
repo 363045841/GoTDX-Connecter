@@ -13,8 +13,13 @@ import (
 )
 
 var (
-	mu       sync.Mutex
-	instance *gotdx.Client
+	mu        sync.Mutex
+	reprobeMu sync.Mutex
+	instance  *gotdx.Client
+
+	buildClientForReprobe   = buildClient
+	connectClientForReprobe = connectClient
+	connectMainForReprobe   = connectMainClient
 )
 
 func Get() *gotdx.Client {
@@ -30,33 +35,51 @@ func Get() *gotdx.Client {
 }
 
 func Reprobe() error {
-	mu.Lock()
-	defer mu.Unlock()
-	old := instance
-	if old != nil {
-		old.Disconnect()
-	}
-	newClient := buildClient()
+	return reprobe(connectClientForReprobe)
+}
+
+// ReprobeMain 只恢复 main 行情连接，扩展市场连接在首次请求时按需建立。
+func ReprobeMain() error {
+	return reprobe(connectMainForReprobe)
+}
+
+func reprobe(connect func(*gotdx.Client) error) error {
+	reprobeMu.Lock()
+	defer reprobeMu.Unlock()
+
+	newClient := buildClientForReprobe()
 	if newClient == nil {
-		if old != nil {
-			instance = old
-		}
 		return errors.New("Reprobe: no reachable hosts")
 	}
-	if err := connectClient(newClient); err != nil {
+	if err := connect(newClient); err != nil {
+		_ = newClient.Disconnect()
 		return fmt.Errorf("Reprobe: connect failed: %w", err)
 	}
+
+	mu.Lock()
+	old := instance
 	instance = newClient
+	mu.Unlock()
+	if old != nil {
+		_ = old.Disconnect()
+	}
 	log.Println("[gotdx] re-probe complete, new client created")
 	return nil
 }
 
-func connectClient(c *gotdx.Client) error {
+func connectMainClient(c *gotdx.Client) error {
 	if c == nil {
 		return errors.New("client is nil")
 	}
 	if _, err := c.Connect(); err != nil {
 		return fmt.Errorf("main connection failed: %w", err)
+	}
+	return nil
+}
+
+func connectClient(c *gotdx.Client) error {
+	if err := connectMainClient(c); err != nil {
+		return err
 	}
 	if _, err := c.ConnectEx(); err != nil {
 		return fmt.Errorf("extended connection failed: %w", err)
