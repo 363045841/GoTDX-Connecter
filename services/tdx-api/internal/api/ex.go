@@ -48,7 +48,7 @@ type exHistoryTransactionRequest struct {
 }
 
 func handleExCount(c *gin.Context) {
-	count, err := client.Get().ExCount()
+	count, err := exCall(func(c client.ExQuerier) (uint32, error) { return c.ExCount() })
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -62,7 +62,7 @@ func handleExList(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().ExList(req.Start, req.Count)
+	data, err := exCall(func(c client.ExQuerier) ([]proto.ExListItem, error) { return c.ExList(req.Start, req.Count) })
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -76,7 +76,7 @@ func handleExQuote(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().ExQuote(req.Category, req.Code)
+	data, err := exCall(func(c client.ExQuerier) (*proto.ExQuoteItem, error) { return c.ExQuote(req.Category, req.Code) })
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -94,7 +94,7 @@ func handleExQuotes(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "categories and codes are required"})
 		return
 	}
-	data, err := client.Get().ExQuotes(req.Categories, req.Codes)
+	data, err := exCall(func(c client.ExQuerier) ([]proto.ExQuoteItem, error) { return c.ExQuotes(req.Categories, req.Codes) })
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -108,7 +108,9 @@ func handleExKLine(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	klines, err := client.Get().ExKLine(req.Category, req.Code, req.Period, req.Start, req.Count, req.Times)
+	klines, err := exCall(func(c client.ExQuerier) ([]proto.ExKLineItem, error) {
+		return c.ExKLine(req.Category, req.Code, req.Period, req.Start, req.Count, req.Times)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -122,7 +124,9 @@ func handleExTick(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	tick, err := client.Get().ExTickChart(req.Category, req.Code, req.Date)
+	tick, err := exCall(func(c client.ExQuerier) ([]proto.ExTickChartData, error) {
+		return c.ExTickChart(req.Category, req.Code, req.Date)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -136,7 +140,9 @@ func handleExHistoryTransaction(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	data, err := client.Get().ExHistoryTransaction(req.Date, req.Category, req.Code)
+	data, err := exCall(func(c client.ExQuerier) ([]proto.ExHistoryTransactionItem, error) {
+		return c.ExHistoryTransaction(req.Date, req.Category, req.Code)
+	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -145,7 +151,7 @@ func handleExHistoryTransaction(c *gin.Context) {
 }
 
 func handleExTable(c *gin.Context) {
-	data, err := client.Get().ExTable()
+	data, err := exCall(func(c client.ExQuerier) (string, error) { return c.ExTable() })
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -162,45 +168,72 @@ type exKLineByDateRequest struct {
 	Times     uint16 `json:"times"`
 }
 
-func ExKLineRange(category uint8, code string, period uint16, times uint16, startDate, endDate time.Time) ([]proto.ExKLineItem, error) {
-	out := []proto.ExKLineItem{}
+// parseExKLineDateTime 解析扩展行情 DateTime；gotdx 日线为 "2006-01-02 15:04:05"
+func parseExKLineDateTime(value string) (time.Time, error) {
+	layouts := []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	}
+	var lastErr error
+	for _, layout := range layouts {
+		t, err := time.ParseInLocation(layout, value, time.Local)
+		if err == nil {
+			return t, nil
+		}
+		lastErr = err
+	}
+	return time.Time{}, lastErr
+}
+
+// filterExKLineByDate 按日期区间过滤扩展 K 线，去重并升序
+func filterExKLineByDate(klines []proto.ExKLineItem, startDate, endDate time.Time) []proto.ExKLineItem {
+	out := make([]proto.ExKLineItem, 0, len(klines))
 	seen := make(map[string]bool)
 	end := endDate.Add(24 * time.Hour)
 
-	for start := uint32(0); ; start += uint32(klinePageSize) {
-		klines, err := safeExKLine(category, code, period, uint32(start), klinePageSize, times)
+	for _, k := range klines {
+		if seen[k.DateTime] {
+			continue
+		}
+		seen[k.DateTime] = true
+		t, err := parseExKLineDateTime(k.DateTime)
 		if err != nil {
-			return nil, err
+			continue
 		}
-		if len(klines) == 0 {
-			break
-		}
-
-		for _, k := range klines {
-			if seen[k.DateTime] {
-				continue
-			}
-			seen[k.DateTime] = true
-			t, err := time.ParseInLocation("2006-01-02", k.DateTime, time.Local)
-			if err != nil {
-				continue
-			}
-			if (t.Equal(startDate) || t.After(startDate)) && t.Before(end) {
-				out = append(out, k)
-			}
-		}
-
-		if len(klines) < int(klinePageSize) {
-			break
+		if (t.Equal(startDate) || t.After(startDate)) && t.Before(end) {
+			out = append(out, k)
 		}
 	}
 
 	sort.Slice(out, func(i, j int) bool {
-		ti, _ := time.ParseInLocation("2006-01-02", out[i].DateTime, time.Local)
-		tj, _ := time.ParseInLocation("2006-01-02", out[j].DateTime, time.Local)
+		ti, _ := parseExKLineDateTime(out[i].DateTime)
+		tj, _ := parseExKLineDateTime(out[j].DateTime)
 		return ti.Before(tj)
 	})
-	return out, nil
+	return out
+}
+
+// fetchExKLinePage 可测注入点；生产默认走 safeExKLine
+var fetchExKLinePage = safeExKLine
+
+func exKLineOldest(k proto.ExKLineItem) (time.Time, bool) {
+	t, err := parseExKLineDateTime(k.DateTime)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// ExKLineRange 按 ExKLine 分页拉取扩展行情并按日期过滤
+func ExKLineRange(category uint8, code string, period uint16, times uint16, startDate, endDate time.Time) ([]proto.ExKLineItem, error) {
+	raw, err := paginateFromRecent(klinePageSize, func(start uint32, count uint16) ([]proto.ExKLineItem, error) {
+		return fetchExKLinePage(category, code, period, start, count, times)
+	}, exKLineOldest, startDate, false)
+	if err != nil {
+		return nil, err
+	}
+	return filterExKLineByDate(raw, startDate, endDate), nil
 }
 
 type exKLineByDateResponse struct {

@@ -2,10 +2,12 @@ package api
 
 import (
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 
+	"KlineChartQuantGo/services/tdx-api/internal/client"
 	"github.com/gin-gonic/gin"
 )
 
@@ -45,15 +47,32 @@ func NewRouter() *gin.Engine {
 		store = nil
 	}
 	cache := newSymbolDirectoryCache(gotdxSymbolDirectoryLoader{}, store, symbolDirectoryTTL)
-	if err := cache.warmUp(); err != nil {
-		log.Printf("symbol directory: warmup failed: %v", err)
-	}
-	return newRouter(cache)
+	go func() {
+		if err := cache.warmUp(); err != nil {
+			log.Printf("symbol directory: warmup failed: %v", err)
+		}
+	}()
+	return newRouterWithStatus(cache, client.DefaultManager().Status)
 }
 
 func newRouter(symbolCache *symbolDirectoryCache) *gin.Engine {
+	return newRouterWithStatus(symbolCache, client.DefaultManager().Status)
+}
+
+func newRouterWithStatus(symbolCache *symbolDirectoryCache, status func() client.Status) *gin.Engine {
 	r := gin.New()
 	r.Use(recoveryMiddleware(), corsMiddleware())
+	r.GET("/health/live", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	r.GET("/health/ready", func(c *gin.Context) {
+		current := status()
+		code := http.StatusOK
+		if !current.Ready {
+			code = http.StatusServiceUnavailable
+		}
+		c.JSON(code, current)
+	})
 
 	stock := r.Group("/api/stock")
 	{

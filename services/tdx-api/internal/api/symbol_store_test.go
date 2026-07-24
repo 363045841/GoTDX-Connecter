@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -220,5 +221,20 @@ func TestSQLiteSymbolDirectoryStoreLoadsConsistentSnapshotDuringReplacement(t *t
 	}
 	if readErr != nil {
 		t.Fatal(readErr)
+	}
+}
+
+func TestSQLiteSymbolDirectoryStoreUsesWAL(t *testing.T) {
+	store, err := newSQLiteSymbolDirectoryStore(filepath.Join(t.TempDir(), "symbols.db"))
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var mode string
+	if err := store.db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatalf("read journal mode: %v", err)
+	}
+	if strings.ToLower(mode) != "wal" {
+		t.Fatalf("journal mode = %q, want wal", mode)
 	}
 }

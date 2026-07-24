@@ -38,4 +38,7 @@ func TestIndexPageSizeStaysBelowGetIndexBarsLimit(t *testing.T) {
 	if indexPageSize >= 801 {
 		t.Fatalf("index page size = %d exceeds the verified GetIndexBars limit", indexPageSize)
 	}
+	if indexFallbackPageSize == 0 || indexFallbackPageSize >= indexPageSize {
+		t.Fatalf("indexFallbackPageSize = %d invalid relative to indexPageSize", indexFallbackPageSize)
+	}
 }

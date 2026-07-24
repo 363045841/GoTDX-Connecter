@@ -1,0 +1,368 @@
+package client
+
+import (
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/bensema/gotdx"
+)
+
+func testManager(t *testing.T, domains ...Domain) (*Manager, map[Domain]*atomic.Int32) {
+	t.Helper()
+	builds := make(map[Domain]*atomic.Int32, len(domains))
+	configs := make(map[Domain]domainConfig, len(domains))
+	for _, domain := range domains {
+		counter := &atomic.Int32{}
+		builds[domain] = counter
+		configs[domain] = domainConfig{
+			build: func() *gotdx.Client {
+				counter.Add(1)
+				return gotdx.New()
+			},
+			connect: func(*gotdx.Client) error { return nil },
+			close:   func(*gotdx.Client) error { return nil },
+		}
+	}
+	manager := newManager(configs)
+	if err := manager.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	return manager, builds
+}
+
+func TestReconnectWaitsForActiveLease(t *testing.T) {
+	manager, _ := testManager(t, DomainMain)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	requestDone := make(chan struct{})
+	go func() {
+		_, _ = execute(manager, DomainMain, func(*gotdx.Client) (struct{}, error) {
+			close(started)
+			<-release
+			return struct{}{}, nil
+		})
+		close(requestDone)
+	}()
+	<-started
+
+	reconnectDone := make(chan error, 1)
+	go func() { reconnectDone <- manager.Reconnect(DomainMain) }()
+	select {
+	case err := <-reconnectDone:
+		t.Fatalf("Reconnect completed while lease was active: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	<-requestDone
+	select {
+	case err := <-reconnectDone:
+		if err != nil {
+			t.Fatalf("Reconnect failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Reconnect did not complete after lease release")
+	}
+}
+
+func TestConcurrentFailuresReconnectOneClientGeneration(t *testing.T) {
+	manager, builds := testManager(t, DomainMain)
+	initialGeneration := manager.generation(DomainMain)
+	const workers = 8
+	start := make(chan struct{})
+	var failures atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = manager.reconnectGeneration(DomainMain, initialGeneration)
+			failures.Add(1)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := builds[DomainMain].Load(); got != 2 {
+		t.Fatalf("client builds = %d, want initial + one replacement", got)
+	}
+	if failures.Load() != workers {
+		t.Fatalf("workers completed = %d, want %d", failures.Load(), workers)
+	}
+}
+
+func TestConcurrentColdRequestsCreateOneClient(t *testing.T) {
+	var builds atomic.Int32
+	manager := newManager(map[Domain]domainConfig{
+		DomainMain: {
+			build: func() *gotdx.Client {
+				builds.Add(1)
+				return gotdx.New()
+			},
+			connect: func(*gotdx.Client) error { return nil },
+			close:   func(*gotdx.Client) error { return nil },
+		},
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+
+	const workers = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _ = execute(manager, DomainMain, func(*gotdx.Client) (struct{}, error) {
+				return struct{}{}, nil
+			})
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := builds.Load(); got != 1 {
+		t.Fatalf("client builds = %d, want 1", got)
+	}
+}
+
+func TestDomainsReconnectIndependently(t *testing.T) {
+	manager, builds := testManager(t, DomainMain, DomainEx, DomainMAC)
+	if err := manager.Reconnect(DomainEx); err != nil {
+		t.Fatalf("Reconnect ex failed: %v", err)
+	}
+	if builds[DomainMain].Load() != 1 || builds[DomainEx].Load() != 2 || builds[DomainMAC].Load() != 1 {
+		t.Fatalf("unexpected builds: main=%d ex=%d mac=%d", builds[DomainMain].Load(), builds[DomainEx].Load(), builds[DomainMAC].Load())
+	}
+}
+
+func TestExecuteRetriesRecoverableFailureOnce(t *testing.T) {
+	manager, builds := testManager(t, DomainMain)
+	var calls int
+	result, err := execute(manager, DomainMain, func(*gotdx.Client) (string, error) {
+		calls++
+		if calls == 1 {
+			return "", errors.New("connection is nil")
+		}
+		return "ok", nil
+	})
+	if err != nil || result != "ok" {
+		t.Fatalf("execute result=%q err=%v", result, err)
+	}
+	if calls != 2 || builds[DomainMain].Load() != 2 {
+		t.Fatalf("calls=%d builds=%d, want 2 and 2", calls, builds[DomainMain].Load())
+	}
+}
+
+func TestExecuteNormalizesWrappedGotdxDisconnectedError(t *testing.T) {
+	manager, builds := testManager(t, DomainMain)
+	var calls int
+	_, err := execute(manager, DomainMain, func(*gotdx.Client) (struct{}, error) {
+		calls++
+		if calls == 1 {
+			return struct{}{}, fmt.Errorf("query failed: %w", errors.New("connection is nil"))
+		}
+		return struct{}{}, nil
+	})
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if calls != 2 || builds[DomainMain].Load() != 2 {
+		t.Fatalf("calls=%d builds=%d, want 2 and 2", calls, builds[DomainMain].Load())
+	}
+}
+
+func TestExecuteDoesNotRetryProtocolDataFailure(t *testing.T) {
+	manager, builds := testManager(t, DomainMain)
+	var calls int
+	_, err := execute(manager, DomainMain, func(*gotdx.Client) (struct{}, error) {
+		calls++
+		return struct{}{}, errors.New("invalid kline datetime")
+	})
+	if err == nil {
+		t.Fatal("execute succeeded")
+	}
+	if calls != 1 || builds[DomainMain].Load() != 1 {
+		t.Fatalf("calls=%d builds=%d, want 1 and 1", calls, builds[DomainMain].Load())
+	}
+}
+
+func TestCloseRejectsNewRequests(t *testing.T) {
+	manager, _ := testManager(t, DomainMain)
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	_, err := execute(manager, DomainMain, func(*gotdx.Client) (struct{}, error) {
+		return struct{}{}, nil
+	})
+	if !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("execute error = %v, want ErrManagerClosed", err)
+	}
+}
+
+func TestCloseWaitsForActiveLease(t *testing.T) {
+	manager, _ := testManager(t, DomainMain)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_, _ = execute(manager, DomainMain, func(*gotdx.Client) (struct{}, error) {
+			close(started)
+			<-release
+			return struct{}{}, nil
+		})
+	}()
+	<-started
+
+	done := make(chan error, 1)
+	go func() { done <- manager.Close() }()
+	select {
+	case err := <-done:
+		t.Fatalf("Close completed while lease was active: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not complete after lease release")
+	}
+}
+
+func TestStatusRequiresEveryConfiguredDomain(t *testing.T) {
+	manager, _ := testManager(t, DomainMain, DomainEx, DomainMAC)
+	if status := manager.Status(); !status.Ready {
+		t.Fatalf("started manager is not ready: %+v", status)
+	}
+	manager.slots[DomainEx].mu.Lock()
+	manager.slots[DomainEx].ready = false
+	manager.slots[DomainEx].lastError = "ex unavailable"
+	manager.slots[DomainEx].mu.Unlock()
+	status := manager.Status()
+	if status.Ready || status.Domains[DomainEx].LastError != "ex unavailable" {
+		t.Fatalf("unexpected degraded status: %+v", status)
+	}
+}
+
+func TestFailedReconnectRetainsReadyClientAndClosesReplacement(t *testing.T) {
+	var builds atomic.Int32
+	var closes atomic.Int32
+	manager := newManager(map[Domain]domainConfig{
+		DomainMain: {
+			build: func() *gotdx.Client {
+				builds.Add(1)
+				return gotdx.New()
+			},
+			connect: func(*gotdx.Client) error {
+				if builds.Load() > 1 {
+					return errors.New("replacement unavailable")
+				}
+				return nil
+			},
+			close: func(*gotdx.Client) error {
+				closes.Add(1)
+				return nil
+			},
+		},
+	})
+	if err := manager.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if err := manager.Reconnect(DomainMain); err == nil {
+		t.Fatal("Reconnect succeeded")
+	}
+	status := manager.Status().Domains[DomainMain]
+	if !status.Ready || status.LastRecoveryError != "replacement unavailable" {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+	if closes.Load() != 1 {
+		t.Fatalf("replacement closes = %d, want 1", closes.Load())
+	}
+	_, err := execute(manager, DomainMain, func(*gotdx.Client) (struct{}, error) { return struct{}{}, nil })
+	if err != nil {
+		t.Fatalf("retained client is unusable: %v", err)
+	}
+	_ = manager.Close()
+}
+
+func TestRequestFailureAndFailedRecoveryMarksGenerationUnready(t *testing.T) {
+	var builds atomic.Int32
+	manager := newManager(map[Domain]domainConfig{
+		DomainMain: {
+			build: func() *gotdx.Client { builds.Add(1); return gotdx.New() },
+			connect: func(*gotdx.Client) error {
+				if builds.Load() > 1 {
+					return errors.New("replacement unavailable")
+				}
+				return nil
+			},
+			close: func(*gotdx.Client) error { return nil },
+		},
+	})
+	if err := manager.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	_, err := execute(manager, DomainMain, func(*gotdx.Client) (struct{}, error) {
+		return struct{}{}, ErrDisconnected
+	})
+	if err == nil {
+		t.Fatal("execute succeeded")
+	}
+	status := manager.Status().Domains[DomainMain]
+	if status.Ready || status.LastRecoveryError != "replacement unavailable" {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+	_ = manager.Close()
+}
+
+func TestCloseDuringReconnectRejectsConnectedReplacement(t *testing.T) {
+	connectStarted := make(chan struct{})
+	releaseConnect := make(chan struct{})
+	var closes atomic.Int32
+	manager := newManager(map[Domain]domainConfig{
+		DomainMain: {
+			build: func() *gotdx.Client { return gotdx.New() },
+			connect: func(*gotdx.Client) error {
+				close(connectStarted)
+				<-releaseConnect
+				return nil
+			},
+			close: func(*gotdx.Client) error { closes.Add(1); return nil },
+		},
+	})
+	reconnectDone := make(chan error, 1)
+	go func() { reconnectDone <- manager.Reconnect(DomainMain) }()
+	<-connectStarted
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- manager.Close() }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.stateMu.RLock()
+		closed := manager.closed
+		manager.stateMu.RUnlock()
+		if closed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Close did not mark manager closed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(releaseConnect)
+	if err := <-reconnectDone; !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("Reconnect error = %v, want ErrManagerClosed", err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if closes.Load() != 1 {
+		t.Fatalf("replacement closes = %d, want 1", closes.Load())
+	}
+}
