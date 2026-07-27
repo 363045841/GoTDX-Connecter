@@ -1,9 +1,11 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -146,26 +148,92 @@ func newStockHistoryTickResponse(preClose float64, data []stockHistoryTickItem) 
 	return stockHistoryTickResponse{PreClose: preClose, Data: data}
 }
 
-// resolveTimeSharePreClose 按品种解析昨收。
-// 当前：A 股主行情 StockQuotesDetail.PreClose（当日实时基准）。
-// date 预留给历史日基准；后续可按 market/kind 挂接港股/美股/期货解析器。
-func resolveTimeSharePreClose(market uint8, code string, _date uint32) float64 {
-	quotes, err := client.Get().StockQuotesDetail([]uint8{market}, []string{code})
-	if err != nil || len(quotes) == 0 {
-		return 0
+type timeSharePreCloseSource struct {
+	now       func() time.Time
+	quote     func(market uint8, code string) (float64, error)
+	dailyBars func(market uint8, code string, date time.Time) ([]proto.SecurityBar, error)
+}
+
+func newDefaultTimeSharePreCloseSource() timeSharePreCloseSource {
+	return timeSharePreCloseSource{
+		now: time.Now,
+		quote: func(market uint8, code string) (float64, error) {
+			quotes, err := mainCall(func(c client.MainQuerier) ([]proto.SecurityQuote, error) {
+				return c.StockQuotesDetail([]uint8{market}, []string{code})
+			})
+			if err != nil {
+				return 0, err
+			}
+			if len(quotes) == 0 {
+				return 0, errors.New("empty realtime quote response")
+			}
+			return quotes[0].PreClose, nil
+		},
+		dailyBars: func(market uint8, code string, date time.Time) ([]proto.SecurityBar, error) {
+			return StockKLineRange(4, market, code, 1, 0, date, date)
+		},
 	}
-	return quotes[0].PreClose
+}
+
+// resolveTimeSharePreClose 当日读取实时行情，历史日读取目标日线的前收价。
+func resolveTimeSharePreClose(market uint8, code string, date uint32, source timeSharePreCloseSource) (float64, error) {
+	year := int(date / 10000)
+	month := time.Month((date % 10000) / 100)
+	day := int(date % 100)
+	loc := time.FixedZone("CST", 8*60*60)
+	target := time.Date(year, month, day, 0, 0, 0, 0, loc)
+	if target.Year() != year || target.Month() != month || target.Day() != day {
+		return 0, fmt.Errorf("invalid history date: %d", date)
+	}
+
+	now := source.now().In(loc)
+	currentDate := uint32(now.Year()*10000 + int(now.Month())*100 + now.Day())
+	if date == currentDate {
+		preClose, err := source.quote(market, code)
+		if err != nil {
+			return 0, err
+		}
+		if math.IsNaN(preClose) || math.IsInf(preClose, 0) || preClose <= 0 {
+			return 0, fmt.Errorf("invalid realtime preClose: %v", preClose)
+		}
+		return preClose, nil
+	}
+
+	bars, err := source.dailyBars(market, code, target)
+	if err != nil {
+		return 0, err
+	}
+	if len(bars) == 0 {
+		return 0, errors.New("target daily bar not found")
+	}
+	preClose := bars[0].Last
+	if math.IsNaN(preClose) || math.IsInf(preClose, 0) || preClose <= 0 {
+		return 0, fmt.Errorf("invalid historical preClose: %v", preClose)
+	}
+	return preClose, nil
+}
+
+func fetchStockHistoryTick(date uint32, market uint8, code string) ([]proto.HistoryMinuteTimeData, error) {
+	return mainCall(func(c client.MainQuerier) ([]proto.HistoryMinuteTimeData, error) {
+		return c.StockHistoryTickChart(date, market, code)
+	})
 }
 
 func handleStockHistoryTick(c *gin.Context) {
+	handleStockHistoryTickWithDeps(c, fetchStockHistoryTick, newDefaultTimeSharePreCloseSource())
+}
+
+func handleStockHistoryTickWithDeps(
+	c *gin.Context,
+	fetchTick func(date uint32, market uint8, code string) ([]proto.HistoryMinuteTimeData, error),
+	preCloseSource timeSharePreCloseSource,
+) {
 	var req stockHistoryTickRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	tick, err := mainCall(func(c client.MainQuerier) ([]proto.HistoryMinuteTimeData, error) {
-		return c.StockHistoryTickChart(req.Date, req.Market, req.Code)
-	})
+	tick, err := fetchTick(req.Date, req.Market, req.Code)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -212,7 +280,11 @@ func handleStockHistoryTick(c *gin.Context) {
 			Vol:       item.Vol,
 		})
 	}
-	preClose := resolveTimeSharePreClose(req.Market, req.Code, req.Date)
+	preClose, err := resolveTimeSharePreClose(req.Market, req.Code, req.Date, preCloseSource)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "resolve preClose: " + err.Error()})
+		return
+	}
 	c.JSON(200, newStockHistoryTickResponse(preClose, resp))
 }
 
