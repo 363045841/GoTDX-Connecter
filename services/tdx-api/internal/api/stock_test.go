@@ -42,3 +42,19 @@ func TestIndexPageSizeStaysBelowGetIndexBarsLimit(t *testing.T) {
 		t.Fatalf("indexFallbackPageSize = %d invalid relative to indexPageSize", indexFallbackPageSize)
 	}
 }
+
+func TestStockHistoryTickResponseIncludesPreClose(t *testing.T) {
+	response := newStockHistoryTickResponse(8.3, []stockHistoryTickItem{{
+		Timestamp: "2026-07-27T09:30:00+08:00",
+		Price:     8.5,
+		Avg:       8.5,
+		Vol:       100,
+	}})
+
+	if response.PreClose != 8.3 {
+		t.Fatalf("preClose = %v, want 8.3", response.PreClose)
+	}
+	if len(response.Data) != 1 || response.Data[0].Price != 8.5 {
+		t.Fatalf("data = %#v, want one 8.5 tick", response.Data)
+	}
+}
