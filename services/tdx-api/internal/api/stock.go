@@ -132,6 +132,31 @@ type stockHistoryTickItem struct {
 	Vol       int     `json:"Vol"`
 }
 
+// stockHistoryTickResponse 分时统一契约：点列 + 昨收元数据。
+// 客户端只认该形状，后续港股/美股/期货扩展不改字段名。
+type stockHistoryTickResponse struct {
+	PreClose float64                `json:"preClose"`
+	Data     []stockHistoryTickItem `json:"data"`
+}
+
+func newStockHistoryTickResponse(preClose float64, data []stockHistoryTickItem) stockHistoryTickResponse {
+	if data == nil {
+		data = []stockHistoryTickItem{}
+	}
+	return stockHistoryTickResponse{PreClose: preClose, Data: data}
+}
+
+// resolveTimeSharePreClose 按品种解析昨收。
+// 当前：A 股主行情 StockQuotesDetail.PreClose（当日实时基准）。
+// date 预留给历史日基准；后续可按 market/kind 挂接港股/美股/期货解析器。
+func resolveTimeSharePreClose(market uint8, code string, _date uint32) float64 {
+	quotes, err := client.Get().StockQuotesDetail([]uint8{market}, []string{code})
+	if err != nil || len(quotes) == 0 {
+		return 0
+	}
+	return quotes[0].PreClose
+}
+
 func handleStockHistoryTick(c *gin.Context) {
 	var req stockHistoryTickRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -187,7 +212,8 @@ func handleStockHistoryTick(c *gin.Context) {
 			Vol:       item.Vol,
 		})
 	}
-	c.JSON(200, resp)
+	preClose := resolveTimeSharePreClose(req.Market, req.Code, req.Date)
+	c.JSON(200, newStockHistoryTickResponse(preClose, resp))
 }
 
 func handleStockList(c *gin.Context) {
