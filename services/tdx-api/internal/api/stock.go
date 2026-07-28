@@ -109,6 +109,7 @@ type stockHistoryTickRequest struct {
 	Date   uint32 `json:"date"`
 	Market uint8  `json:"market"`
 	Code   string `json:"code"`
+	Kind   string `json:"kind"`
 }
 
 func handleStockTick(c *gin.Context) {
@@ -206,11 +207,19 @@ func resolveTimeSharePreClose(market uint8, code string, date uint32, source tim
 	if len(bars) == 0 {
 		return 0, errors.New("target daily bar not found")
 	}
-	preClose := bars[0].Last
+	preClose := securityBarPreClose(bars[0])
 	if math.IsNaN(preClose) || math.IsInf(preClose, 0) || preClose <= 0 {
 		return 0, fmt.Errorf("invalid historical preClose: %v", preClose)
 	}
 	return preClose, nil
+}
+
+// securityBarPreClose 读取日线昨收：优先 PreClose，其次 LastClose。
+func securityBarPreClose(bar proto.SecurityBar) float64 {
+	if bar.PreClose > 0 {
+		return bar.PreClose
+	}
+	return bar.LastClose
 }
 
 func fetchStockHistoryTick(date uint32, market uint8, code string) ([]proto.HistoryMinuteTimeData, error) {
@@ -280,7 +289,32 @@ func handleStockHistoryTickWithDeps(
 			Vol:       item.Vol,
 		})
 	}
-	preClose, err := resolveTimeSharePreClose(req.Market, req.Code, req.Date, preCloseSource)
+	src := preCloseSource
+	if isIndexKLineRequest(req.Kind, req.Market, req.Code) {
+		indexMarket, indexCode := req.Market, req.Code
+		src.dailyBars = func(market uint8, code string, date time.Time) ([]proto.SecurityBar, error) {
+			// 指数日线协议不含昨收，往前多看几天来推算昨收
+			prevDate := date.AddDate(0, 0, -10)
+			bars, err := IndexKLineRange(4, indexMarket, indexCode, prevDate, date)
+			if err != nil {
+				return nil, err
+			}
+			yy, mm, dd := date.Date()
+			for i, b := range bars {
+				by, bm, bd := b.DateTime.Date()
+				if yy == by && mm == bm && dd == bd {
+					if i == 0 {
+						return nil, errors.New("previous index daily bar not found")
+					}
+					b.PreClose = bars[i-1].Close
+					b.LastClose = bars[i-1].Close
+					return []proto.SecurityBar{b}, nil
+				}
+			}
+			return nil, nil
+		}
+	}
+	preClose, err := resolveTimeSharePreClose(req.Market, req.Code, req.Date, src)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "resolve preClose: " + err.Error()})
 		return
@@ -416,21 +450,23 @@ func tryIndexBars(category uint16, market uint8, code string, start uint16, coun
 		return []proto.SecurityBar{}, nil
 	}
 	out := make([]proto.SecurityBar, 0, len(reply.List))
+	loc := time.FixedZone("CST", 8*60*60)
 	for _, b := range reply.List {
-		dt, parseErr := time.ParseInLocation("2006-01-02 15:04:05", b.DateTime, time.Local)
-		if parseErr != nil {
-			dt, parseErr = time.ParseInLocation("2006-01-02T15:04:05", b.DateTime, time.Local)
-		}
-		if parseErr != nil {
-			dt = time.Date(b.Year, time.Month(b.Month), b.Day, b.Hour, b.Minute, 0, 0, time.Local)
+		dt := b.DateTime
+		if dt.IsZero() {
+			dt = time.Date(b.Year, time.Month(b.Month), b.Day, b.Hour, b.Minute, 0, 0, loc)
 		}
 		out = append(out, proto.SecurityBar{
+			PreClose:  b.PreClose,
+			LastClose: b.LastClose,
 			Open:      b.Open,
 			Close:     b.Close,
 			High:      b.High,
 			Low:       b.Low,
 			Vol:       b.Vol,
 			Amount:    b.Amount,
+			RisePrice: b.RisePrice,
+			RiseRate:  b.RiseRate,
 			Year:      b.Year,
 			Month:     b.Month,
 			Day:       b.Day,
@@ -640,8 +676,8 @@ func handleStockKLineByDate(c *gin.Context) {
 	resp := make([]stockKLineByDateResponse, len(klines))
 	for i, k := range klines {
 		amp := 0.0
-		if k.Last != 0 {
-			amp = math.Round((k.High-k.Low)/k.Last*10000) / 100
+		if base := securityBarPreClose(k); base != 0 {
+			amp = math.Round((k.High-k.Low)/base*10000) / 100
 		} else if k.Open != 0 {
 			amp = math.Round((k.High-k.Low)/k.Open*10000) / 100
 		}

@@ -98,6 +98,7 @@ func newRouterWithStatus(symbolCache *symbolDirectoryCache, status func() client
 		ex.POST("/kline", handleExKLine)
 		ex.POST("/kline-by-date", handleExKLineByDate)
 		ex.POST("/tick", handleExTick)
+		ex.POST("/history-tick", handleExHistoryTick)
 		ex.POST("/history-transaction", handleExHistoryTransaction)
 		ex.POST("/table", handleExTable)
 	}
