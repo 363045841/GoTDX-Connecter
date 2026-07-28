@@ -1,9 +1,14 @@
 package api
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"KlineChartQuantGo/services/tdx-api/internal/client"
@@ -132,6 +137,158 @@ func handleExTick(c *gin.Context) {
 		return
 	}
 	c.JSON(200, tick)
+}
+
+type exHistoryTickRequest struct {
+	Date     uint32 `json:"date"`
+	Category uint8  `json:"category"`
+	Code     string `json:"code"`
+}
+
+type exTimeSharePreCloseSource struct {
+	now       func() time.Time
+	quote     func(category uint8, code string) (float64, error)
+	dailyBars func(category uint8, code string, date time.Time) ([]proto.ExKLineItem, error)
+}
+
+func newDefaultExTimeSharePreCloseSource() exTimeSharePreCloseSource {
+	return exTimeSharePreCloseSource{
+		now: time.Now,
+		quote: func(category uint8, code string) (float64, error) {
+			q, err := exCall(func(c client.ExQuerier) (*proto.ExQuoteItem, error) {
+				return c.ExQuote(category, code)
+			})
+			if err != nil {
+				return 0, err
+			}
+			if q == nil {
+				return 0, errors.New("empty ex quote response")
+			}
+			return q.PreClose, nil
+		},
+		dailyBars: func(category uint8, code string, date time.Time) ([]proto.ExKLineItem, error) {
+			// period 4 = 日线（与前端 PERIOD_TO_CATEGORY.daily 对齐）
+			return ExKLineRange(category, code, 4, 1, date, date)
+		},
+	}
+}
+
+// resolveExTimeSharePreClose 当日读扩展实时昨收，历史日读目标日线 Open（扩展 bar 无独立昨收字段）
+func resolveExTimeSharePreClose(category uint8, code string, date uint32, source exTimeSharePreCloseSource) (float64, error) {
+	year := int(date / 10000)
+	month := time.Month((date % 10000) / 100)
+	day := int(date % 100)
+	loc := time.FixedZone("CST", 8*60*60)
+	target := time.Date(year, month, day, 0, 0, 0, 0, loc)
+	if target.Year() != year || target.Month() != month || target.Day() != day {
+		return 0, fmt.Errorf("invalid history date: %d", date)
+	}
+
+	now := source.now().In(loc)
+	currentDate := uint32(now.Year()*10000 + int(now.Month())*100 + now.Day())
+	if date == currentDate {
+		preClose, err := source.quote(category, code)
+		if err != nil {
+			return 0, err
+		}
+		if math.IsNaN(preClose) || math.IsInf(preClose, 0) || preClose <= 0 {
+			return 0, fmt.Errorf("invalid realtime preClose: %v", preClose)
+		}
+		return preClose, nil
+	}
+
+	bars, err := source.dailyBars(category, code, target)
+	if err != nil {
+		return 0, err
+	}
+	if len(bars) == 0 {
+		return 0, errors.New("target daily bar not found")
+	}
+	preClose := bars[0].Open
+	if math.IsNaN(preClose) || math.IsInf(preClose, 0) || preClose <= 0 {
+		return 0, fmt.Errorf("invalid historical preClose: %v", preClose)
+	}
+	return preClose, nil
+}
+
+func fetchExHistoryTick(date uint32, category uint8, code string) ([]proto.ExTickChartData, error) {
+	return exCall(func(c client.ExQuerier) ([]proto.ExTickChartData, error) {
+		return c.ExTickChart(category, code, date)
+	})
+}
+
+func handleExHistoryTick(c *gin.Context) {
+	handleExHistoryTickWithDeps(c, fetchExHistoryTick, newDefaultExTimeSharePreCloseSource())
+}
+
+func handleExHistoryTickWithDeps(
+	c *gin.Context,
+	fetchTick func(date uint32, category uint8, code string) ([]proto.ExTickChartData, error),
+	preCloseSource exTimeSharePreCloseSource,
+) {
+	var req exHistoryTickRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if req.Code == "" {
+		c.JSON(400, gin.H{"error": "code is required"})
+		return
+	}
+
+	tick, err := fetchTick(req.Date, req.Category, req.Code)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	year := int(req.Date / 10000)
+	month := int((req.Date % 10000) / 100)
+	day := int(req.Date % 100)
+	loc := time.FixedZone("CST", 8*60*60)
+	base := time.Date(year, time.Month(month), day, 0, 0, 0, 0, loc)
+
+	resp := make([]stockHistoryTickItem, 0, len(tick))
+	for _, item := range tick {
+		ts, err := parseExTickClock(base, item.Time)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "invalid tick time: " + err.Error()})
+			return
+		}
+		resp = append(resp, stockHistoryTickItem{
+			Timestamp: ts.Format("2006-01-02T15:04:05-07:00"),
+			Price:     item.Price,
+			Avg:       item.Avg,
+			Vol:       item.Vol,
+		})
+	}
+
+	preClose, err := resolveExTimeSharePreClose(req.Category, req.Code, req.Date, preCloseSource)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "resolve preClose: " + err.Error()})
+		return
+	}
+	c.JSON(200, newStockHistoryTickResponse(preClose, resp))
+}
+
+// parseExTickClock 将 gotdx "HH:mm" 接到目标日 Asia/Shanghai 墙钟
+func parseExTickClock(base time.Time, clock string) (time.Time, error) {
+	parts := strings.Split(clock, ":")
+	if len(parts) != 2 {
+		return time.Time{}, fmt.Errorf("expected HH:mm, got %q", clock)
+	}
+	hour, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return time.Time{}, err
+	}
+	minute, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return time.Time{}, err
+	}
+	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return time.Time{}, fmt.Errorf("out of range HH:mm %q", clock)
+	}
+	return time.Date(base.Year(), base.Month(), base.Day(), hour, minute, 0, 0, base.Location()), nil
 }
 
 func handleExHistoryTransaction(c *gin.Context) {
