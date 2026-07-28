@@ -14,37 +14,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestParseExKLineDateTimeAcceptsGotdxSpaceFormat(t *testing.T) {
-	loc := time.Local
-	got, err := parseExKLineDateTime("2026-07-22 15:00:00")
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	want := time.Date(2026, 7, 22, 15, 0, 0, 0, loc)
-	if !got.Equal(want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-}
-
-func TestParseExKLineDateTimeAcceptsDateOnly(t *testing.T) {
-	got, err := parseExKLineDateTime("2025-07-24")
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	want := time.Date(2025, 7, 24, 0, 0, 0, 0, time.Local)
-	if !got.Equal(want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-}
-
-func TestFilterExKLineByDateKeepsBarsWithSpaceDateTime(t *testing.T) {
+func TestFilterExKLineByDateKeepsBarsInRange(t *testing.T) {
 	loc := time.Local
 	klines := []proto.ExKLineItem{
-		{DateTime: "2026-07-22 15:00:00", Open: 1, High: 1, Low: 1, Close: 1},
-		{DateTime: "2026-07-23 15:00:00", Open: 2, High: 2, Low: 2, Close: 2},
-		{DateTime: "2026-07-23 15:00:00", Open: 2, High: 2, Low: 2, Close: 2}, // dup
-		{DateTime: "2026-07-24 15:00:00", Open: 3, High: 3, Low: 3, Close: 3},
-		{DateTime: "2026-07-25 15:00:00", Open: 4, High: 4, Low: 4, Close: 4},
+		{DateTime: time.Date(2026, 7, 22, 15, 0, 0, 0, loc), Open: 1, High: 1, Low: 1, Close: 1},
+		{DateTime: time.Date(2026, 7, 23, 15, 0, 0, 0, loc), Open: 2, High: 2, Low: 2, Close: 2},
+		{DateTime: time.Date(2026, 7, 23, 15, 0, 0, 0, loc), Open: 2, High: 2, Low: 2, Close: 2}, // dup
+		{DateTime: time.Date(2026, 7, 24, 15, 0, 0, 0, loc), Open: 3, High: 3, Low: 3, Close: 3},
+		{DateTime: time.Date(2026, 7, 25, 15, 0, 0, 0, loc), Open: 4, High: 4, Low: 4, Close: 4},
 	}
 
 	got := filterExKLineByDate(
@@ -56,8 +33,8 @@ func TestFilterExKLineByDateKeepsBarsWithSpaceDateTime(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("filtered bars = %d, want 2; got %#v", len(got), got)
 	}
-	if got[0].DateTime != "2026-07-23 15:00:00" || got[1].DateTime != "2026-07-24 15:00:00" {
-		t.Fatalf("dates = %q, %q; want ascending 23 then 24", got[0].DateTime, got[1].DateTime)
+	if got[0].DateTime.Day() != 23 || got[1].DateTime.Day() != 24 {
+		t.Fatalf("dates = %s, %s; want ascending 23 then 24", got[0].DateTime, got[1].DateTime)
 	}
 }
 
@@ -97,8 +74,9 @@ func TestResolveExTimeSharePreCloseUsesTargetDailyBarForHistoricalDate(t *testin
 				t.Fatalf("daily bar request = %d/%s/%s", category, code, date.Format("20060102"))
 			}
 			return []proto.ExKLineItem{{
-				DateTime: "2026-07-24 15:00:00",
-				Open:     18.0,
+				DateTime: time.Date(2026, 7, 24, 15, 0, 0, 0, loc),
+				PreClose: 18.0,
+				Open:     18.2,
 				Close:    18.8,
 			}}, nil
 		},
@@ -108,7 +86,6 @@ func TestResolveExTimeSharePreCloseUsesTargetDailyBarForHistoricalDate(t *testin
 	if err != nil {
 		t.Fatalf("resolve historical preClose: %v", err)
 	}
-	// 扩展日线无昨收字段时，用目标日 Open 作基准
 	if got != 18.0 {
 		t.Fatalf("preClose = %v, want 18.0", got)
 	}
@@ -132,7 +109,11 @@ func TestExHistoryTickReturnsUnifiedContract(t *testing.T) {
 			return 0, errors.New("realtime quote must not be called for historical date")
 		},
 		dailyBars: func(uint8, string, time.Time) ([]proto.ExKLineItem, error) {
-			return []proto.ExKLineItem{{DateTime: "2026-07-24 15:00:00", Open: 18.5, Close: 18.9}}, nil
+			return []proto.ExKLineItem{{
+				DateTime: time.Date(2026, 7, 24, 15, 0, 0, 0, loc),
+				Open:     18.5,
+				Close:    18.9,
+			}}, nil
 		},
 	}
 

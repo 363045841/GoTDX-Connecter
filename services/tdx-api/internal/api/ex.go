@@ -173,7 +173,7 @@ func newDefaultExTimeSharePreCloseSource() exTimeSharePreCloseSource {
 	}
 }
 
-// resolveExTimeSharePreClose 当日读扩展实时昨收，历史日读目标日线 Open（扩展 bar 无独立昨收字段）
+// resolveExTimeSharePreClose 当日读扩展实时昨收，历史日读目标日线昨收（缺省回退 Open）
 func resolveExTimeSharePreClose(category uint8, code string, date uint32, source exTimeSharePreCloseSource) (float64, error) {
 	year := int(date / 10000)
 	month := time.Month((date % 10000) / 100)
@@ -204,11 +204,22 @@ func resolveExTimeSharePreClose(category uint8, code string, date uint32, source
 	if len(bars) == 0 {
 		return 0, errors.New("target daily bar not found")
 	}
-	preClose := bars[0].Open
+	preClose := exKLinePreClose(bars[0])
 	if math.IsNaN(preClose) || math.IsInf(preClose, 0) || preClose <= 0 {
 		return 0, fmt.Errorf("invalid historical preClose: %v", preClose)
 	}
 	return preClose, nil
+}
+
+// exKLinePreClose 读取扩展日线昨收：PreClose → LastClose → Open。
+func exKLinePreClose(bar proto.ExKLineItem) float64 {
+	if bar.PreClose > 0 {
+		return bar.PreClose
+	}
+	if bar.LastClose > 0 {
+		return bar.LastClose
+	}
+	return bar.Open
 }
 
 func fetchExHistoryTick(date uint32, category uint8, code string) ([]proto.ExTickChartData, error) {
@@ -325,48 +336,28 @@ type exKLineByDateRequest struct {
 	Times     uint16 `json:"times"`
 }
 
-// parseExKLineDateTime 解析扩展行情 DateTime；gotdx 日线为 "2006-01-02 15:04:05"
-func parseExKLineDateTime(value string) (time.Time, error) {
-	layouts := []string{
-		"2006-01-02 15:04:05",
-		"2006-01-02T15:04:05",
-		"2006-01-02",
-	}
-	var lastErr error
-	for _, layout := range layouts {
-		t, err := time.ParseInLocation(layout, value, time.Local)
-		if err == nil {
-			return t, nil
-		}
-		lastErr = err
-	}
-	return time.Time{}, lastErr
-}
-
 // filterExKLineByDate 按日期区间过滤扩展 K 线，去重并升序
 func filterExKLineByDate(klines []proto.ExKLineItem, startDate, endDate time.Time) []proto.ExKLineItem {
 	out := make([]proto.ExKLineItem, 0, len(klines))
-	seen := make(map[string]bool)
+	seen := make(map[int64]bool)
 	end := endDate.Add(24 * time.Hour)
 
 	for _, k := range klines {
-		if seen[k.DateTime] {
+		if k.DateTime.IsZero() {
 			continue
 		}
-		seen[k.DateTime] = true
-		t, err := parseExKLineDateTime(k.DateTime)
-		if err != nil {
+		key := k.DateTime.UnixNano()
+		if seen[key] {
 			continue
 		}
-		if (t.Equal(startDate) || t.After(startDate)) && t.Before(end) {
+		seen[key] = true
+		if (k.DateTime.Equal(startDate) || k.DateTime.After(startDate)) && k.DateTime.Before(end) {
 			out = append(out, k)
 		}
 	}
 
 	sort.Slice(out, func(i, j int) bool {
-		ti, _ := parseExKLineDateTime(out[i].DateTime)
-		tj, _ := parseExKLineDateTime(out[j].DateTime)
-		return ti.Before(tj)
+		return out[i].DateTime.Before(out[j].DateTime)
 	})
 	return out
 }
@@ -375,11 +366,7 @@ func filterExKLineByDate(klines []proto.ExKLineItem, startDate, endDate time.Tim
 var fetchExKLinePage = safeExKLine
 
 func exKLineOldest(k proto.ExKLineItem) (time.Time, bool) {
-	t, err := parseExKLineDateTime(k.DateTime)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return t, true
+	return k.DateTime, !k.DateTime.IsZero()
 }
 
 // ExKLineRange 按 ExKLine 分页拉取扩展行情并按日期过滤

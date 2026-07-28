@@ -153,13 +153,13 @@ func TestExKLineRangeAdvancesByActualShortPage(t *testing.T) {
 		case 0:
 			// 短页 700 语义：只返回 2 条模拟
 			return []proto.ExKLineItem{
-				{DateTime: "2024-06-01 15:00:00", Open: 1, High: 1, Low: 1, Close: 1},
-				{DateTime: "2024-06-02 15:00:00", Open: 2, High: 2, Low: 2, Close: 2},
+				{DateTime: time.Date(2024, 6, 1, 15, 0, 0, 0, time.Local), Open: 1, High: 1, Low: 1, Close: 1},
+				{DateTime: time.Date(2024, 6, 2, 15, 0, 0, 0, time.Local), Open: 2, High: 2, Low: 2, Close: 2},
 			}, nil
 		case 2:
 			return []proto.ExKLineItem{
-				{DateTime: "2023-01-01 15:00:00", Open: 3, High: 3, Low: 3, Close: 3},
-				{DateTime: "2023-01-02 15:00:00", Open: 4, High: 4, Low: 4, Close: 4},
+				{DateTime: time.Date(2023, 1, 1, 15, 0, 0, 0, time.Local), Open: 3, High: 3, Low: 3, Close: 3},
+				{DateTime: time.Date(2023, 1, 2, 15, 0, 0, 0, time.Local), Open: 4, High: 4, Low: 4, Close: 4},
 			}, nil
 		default:
 			return nil, nil
