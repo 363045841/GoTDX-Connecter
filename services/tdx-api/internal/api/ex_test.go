@@ -49,7 +49,7 @@ func TestResolveExTimeSharePreCloseUsesQuoteOnCurrentDate(t *testing.T) {
 			return 18.5, nil
 		},
 		dailyBars: func(uint8, string, time.Time) ([]proto.ExKLineItem, error) {
-			return nil, errors.New("daily bars must not be called for the current date")
+			return nil, errors.New("daily bars must not be called when quote preClose is valid")
 		},
 	}
 
@@ -59,6 +59,39 @@ func TestResolveExTimeSharePreCloseUsesQuoteOnCurrentDate(t *testing.T) {
 	}
 	if got != 18.5 {
 		t.Fatalf("preClose = %v, want 18.5", got)
+	}
+}
+
+func TestResolveExTimeSharePreCloseFallsBackToDailyBarWhenQuoteZero(t *testing.T) {
+	loc := time.FixedZone("CST", 8*60*60)
+	source := exTimeSharePreCloseSource{
+		now: func() time.Time { return time.Date(2026, 7, 29, 12, 0, 0, 0, loc) },
+		quote: func(category uint8, code string) (float64, error) {
+			if category != 31 || code != "00700" {
+				t.Fatalf("quote request = %d/%s", category, code)
+			}
+			// 港股扩展实时 PreClose 常为 0
+			return 0, nil
+		},
+		dailyBars: func(category uint8, code string, date time.Time) ([]proto.ExKLineItem, error) {
+			if category != 31 || code != "00700" || date.Format("20060102") != "20260729" {
+				t.Fatalf("daily bar request = %d/%s/%s", category, code, date.Format("20060102"))
+			}
+			return []proto.ExKLineItem{{
+				DateTime: time.Date(2026, 7, 29, 15, 0, 0, 0, loc),
+				PreClose: 447.2,
+				Open:     453.0,
+				Close:    466.4,
+			}}, nil
+		},
+	}
+
+	got, err := resolveExTimeSharePreClose(31, "00700", 20260729, source)
+	if err != nil {
+		t.Fatalf("resolve current preClose with zero quote: %v", err)
+	}
+	if got != 447.2 {
+		t.Fatalf("preClose = %v, want daily bar 447.2", got)
 	}
 }
 
@@ -208,8 +241,9 @@ func TestExHistoryTickReturnsBadGatewayWhenBaselineCannotBeResolved(t *testing.T
 		quote: func(uint8, string) (float64, error) {
 			return 0, errors.New("quote unavailable")
 		},
+		// 当日 quote 失败后回退日线；日线也失败才 502
 		dailyBars: func(uint8, string, time.Time) ([]proto.ExKLineItem, error) {
-			return nil, errors.New("unexpected daily bar request")
+			return nil, errors.New("daily bar unavailable")
 		},
 	}
 
@@ -229,7 +263,7 @@ func TestExHistoryTickReturnsBadGatewayWhenBaselineCannotBeResolved(t *testing.T
 	if resp.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502: %s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(resp.Body.String(), "quote unavailable") {
-		t.Fatalf("response = %s, want explicit upstream error", resp.Body.String())
+	if !strings.Contains(resp.Body.String(), "daily bar unavailable") {
+		t.Fatalf("response = %s, want daily-bar fallback error", resp.Body.String())
 	}
 }

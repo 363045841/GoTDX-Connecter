@@ -173,7 +173,8 @@ func newDefaultExTimeSharePreCloseSource() exTimeSharePreCloseSource {
 	}
 }
 
-// resolveExTimeSharePreClose 当日读扩展实时昨收，历史日读目标日线昨收（缺省回退 Open）
+// resolveExTimeSharePreClose 当日优先实时昨收；无效（港股 ExQuote 常为 0）则回退目标日线。
+// 历史日读目标日线昨收（PreClose → LastClose → Open）。
 func resolveExTimeSharePreClose(category uint8, code string, date uint32, source exTimeSharePreCloseSource) (float64, error) {
 	year := int(date / 10000)
 	month := time.Month((date % 10000) / 100)
@@ -188,13 +189,10 @@ func resolveExTimeSharePreClose(category uint8, code string, date uint32, source
 	currentDate := uint32(now.Year()*10000 + int(now.Month())*100 + now.Day())
 	if date == currentDate {
 		preClose, err := source.quote(category, code)
-		if err != nil {
-			return 0, err
+		if err == nil && !math.IsNaN(preClose) && !math.IsInf(preClose, 0) && preClose > 0 {
+			return preClose, nil
 		}
-		if math.IsNaN(preClose) || math.IsInf(preClose, 0) || preClose <= 0 {
-			return 0, fmt.Errorf("invalid realtime preClose: %v", preClose)
-		}
-		return preClose, nil
+		// quote 失败或 PreClose=0：回退日线（HK 扩展行情常见）
 	}
 
 	bars, err := source.dailyBars(category, code, target)
