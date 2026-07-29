@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -237,3 +238,116 @@ func TestStockHistoryTickReturnsBadGatewayWhenBaselineCannotBeResolved(t *testin
 		t.Fatalf("response = %s, want explicit upstream error", resp.Body.String())
 	}
 }
+
+func TestStockHistoryTickPrependsOpeningTradeOnCurrentDate(t *testing.T) {
+	loc := time.FixedZone("CST", 8*60*60)
+	original := fetchOpeningTrade
+	t.Cleanup(func() { fetchOpeningTrade = original })
+
+	var sawDate uint32
+	fetchOpeningTrade = func(date uint32, market uint8, code string, now time.Time) (openingTrade, bool) {
+		sawDate = date
+		if market != 1 || code != "601360" {
+			t.Fatalf("opening trade request = %d/%s", market, code)
+		}
+		if now.Format("20060102") != "20260729" {
+			t.Fatalf("now = %s, want current trading day", now.Format("20060102"))
+		}
+		return openingTrade{Price: 8.95, Vol: 1200}, true
+	}
+
+	fetchTick := func(uint32, uint8, string) ([]proto.HistoryMinuteTimeData, error) {
+		return []proto.HistoryMinuteTimeData{{Price: 8.97, Avg: 8.86, Vol: 49146}}, nil
+	}
+	preCloseSource := timeSharePreCloseSource{
+		now:   func() time.Time { return time.Date(2026, 7, 29, 11, 0, 0, 0, loc) },
+		quote: func(uint8, string) (float64, error) { return 8.68, nil },
+	}
+
+	router := gin.New()
+	router.POST("/api/stock/history-tick", func(c *gin.Context) {
+		handleStockHistoryTickWithDeps(c, fetchTick, preCloseSource)
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/stock/history-tick",
+		bytes.NewBufferString(`{"date":20260729,"market":1,"code":"601360"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.Code, resp.Body.String())
+	}
+	if sawDate != 20260729 {
+		t.Fatalf("opening trade date = %d, want 20260729", sawDate)
+	}
+	var body stockHistoryTickResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, resp.Body.String())
+	}
+	if len(body.Data) != 2 {
+		t.Fatalf("data len = %d, want 2 (09:30 + first minute)", len(body.Data))
+	}
+	if body.Data[0].Timestamp != "2026-07-29T09:30:00+08:00" {
+		t.Fatalf("first timestamp = %q, want 09:30", body.Data[0].Timestamp)
+	}
+	if body.Data[0].Price != 8.95 || body.Data[0].Vol != 1200 {
+		t.Fatalf("opening tick = %#v, want price 8.95 vol 1200", body.Data[0])
+	}
+	if body.Data[1].Timestamp != "2026-07-29T09:31:00+08:00" || body.Data[1].Price != 8.97 {
+		t.Fatalf("second tick = %#v, want 09:31 price 8.97", body.Data[1])
+	}
+}
+
+func TestStockHistoryTickPrependsOpeningTradeOnHistoricalDate(t *testing.T) {
+	loc := time.FixedZone("CST", 8*60*60)
+	original := fetchOpeningTrade
+	t.Cleanup(func() { fetchOpeningTrade = original })
+
+	fetchOpeningTrade = func(date uint32, market uint8, code string, now time.Time) (openingTrade, bool) {
+		if date != 20260728 || market != 1 || code != "601360" {
+			t.Fatalf("opening trade request = %d/%d/%s", date, market, code)
+		}
+		if now.Format("20060102") != "20260729" {
+			t.Fatalf("now = %s, want 20260729 for historical branch", now.Format("20060102"))
+		}
+		return openingTrade{Price: 8.5, Vol: 800}, true
+	}
+
+	fetchTick := func(uint32, uint8, string) ([]proto.HistoryMinuteTimeData, error) {
+		return []proto.HistoryMinuteTimeData{{Price: 8.6, Avg: 8.55, Vol: 100}}, nil
+	}
+	preCloseSource := timeSharePreCloseSource{
+		now: func() time.Time { return time.Date(2026, 7, 29, 11, 0, 0, 0, loc) },
+		dailyBars: func(uint8, string, time.Time) ([]proto.SecurityBar, error) {
+			return []proto.SecurityBar{{PreClose: 8.4, Close: 8.7}}, nil
+		},
+	}
+
+	router := gin.New()
+	router.POST("/api/stock/history-tick", func(c *gin.Context) {
+		handleStockHistoryTickWithDeps(c, fetchTick, preCloseSource)
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/stock/history-tick",
+		bytes.NewBufferString(`{"date":20260728,"market":1,"code":"601360"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"timestamp":"2026-07-28T09:30:00+08:00"`) {
+		t.Fatalf("response = %s, want historical 09:30", resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"Price":8.5`) {
+		t.Fatalf("response = %s, want opening price 8.5", resp.Body.String())
+	}
+}
+
+

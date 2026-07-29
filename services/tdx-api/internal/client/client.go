@@ -52,6 +52,7 @@ type MainQuerier interface {
 	StockTickChart(uint8, string, uint16, uint16) ([]proto.MinuteTimeData, error)
 	StockHistoryTickChart(uint32, uint8, string) ([]proto.HistoryMinuteTimeData, error)
 	StockHistoryFullTransaction(uint32, uint8, string) ([]proto.HistoryTransactionData, error)
+	StockFullTransaction(uint8, string) ([]proto.TransactionData, error)
 	StockIndexInfo(uint8, string) (*proto.GetIndexInfoReply, error)
 	StockTransaction(uint8, string, uint16, uint16) ([]proto.TransactionData, error)
 	StockHistoryTransaction(uint32, uint8, string, uint16, uint16) ([]proto.HistoryTransactionData, error)

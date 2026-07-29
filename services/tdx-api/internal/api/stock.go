@@ -226,6 +226,38 @@ func fetchStockHistoryTick(date uint32, market uint8, code string) ([]proto.Hist
 	})
 }
 
+// openingTrade 开盘首笔，用于补 09:30 分时点。
+type openingTrade struct {
+	Price float64
+	Vol   int
+}
+
+// fetchOpeningTrade 按日期选逐笔源：当日用 StockFullTransaction，历史日用 StockHistoryFullTransaction。
+// 可测注入；生产默认见 defaultFetchOpeningTrade。
+var fetchOpeningTrade = defaultFetchOpeningTrade
+
+func defaultFetchOpeningTrade(date uint32, market uint8, code string, now time.Time) (openingTrade, bool) {
+	loc := time.FixedZone("CST", 8*60*60)
+	now = now.In(loc)
+	currentDate := uint32(now.Year()*10000 + int(now.Month())*100 + now.Day())
+	if date == currentDate {
+		trans, err := mainCall(func(c client.MainQuerier) ([]proto.TransactionData, error) {
+			return c.StockFullTransaction(market, code)
+		})
+		if err != nil || len(trans) == 0 {
+			return openingTrade{}, false
+		}
+		return openingTrade{Price: trans[0].Price, Vol: trans[0].Vol}, true
+	}
+	trans, err := mainCall(func(c client.MainQuerier) ([]proto.HistoryTransactionData, error) {
+		return c.StockHistoryFullTransaction(date, market, code)
+	})
+	if err != nil || len(trans) == 0 {
+		return openingTrade{}, false
+	}
+	return openingTrade{Price: trans[0].Price, Vol: trans[0].Vol}, true
+}
+
 func handleStockHistoryTick(c *gin.Context) {
 	handleStockHistoryTickWithDeps(c, fetchStockHistoryTick, newDefaultTimeSharePreCloseSource())
 }
@@ -249,18 +281,21 @@ func handleStockHistoryTickWithDeps(
 	year := int(req.Date / 10000)
 	month := int((req.Date % 10000) / 100)
 	day := int(req.Date % 100)
-	base := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	loc := time.FixedZone("CST", 8*60*60)
+	base := time.Date(year, time.Month(month), day, 0, 0, 0, 0, loc)
 
 	var first *stockHistoryTickItem
 	if len(tick) > 0 {
-		if trans, err := mainCall(func(c client.MainQuerier) ([]proto.HistoryTransactionData, error) {
-			return c.StockHistoryFullTransaction(req.Date, req.Market, req.Code)
-		}); err == nil && len(trans) > 0 {
+		nowFn := preCloseSource.now
+		if nowFn == nil {
+			nowFn = time.Now
+		}
+		if trade, ok := fetchOpeningTrade(req.Date, req.Market, req.Code, nowFn()); ok {
 			first = &stockHistoryTickItem{
 				Timestamp: base.Add(9*time.Hour + 30*time.Minute).Format("2006-01-02T15:04:05+08:00"),
-				Price:     trans[0].Price,
-				Avg:       trans[0].Price,
-				Vol:       trans[0].Vol,
+				Price:     trade.Price,
+				Avg:       trade.Price,
+				Vol:       trade.Vol,
 			}
 		}
 	}
