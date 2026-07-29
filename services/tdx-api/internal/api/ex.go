@@ -252,6 +252,19 @@ func handleExHistoryTickWithDeps(
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	if len(tick) > 0 {
+		allZero := true
+		for _, item := range tick {
+			if item.Price != 0 || item.Avg != 0 || item.Vol != 0 {
+				allZero = false
+				break
+			}
+		}
+		if allZero {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "该日期暂无历史分时数据"})
+			return
+		}
+	}
 
 	year := int(req.Date / 10000)
 	month := int((req.Date % 10000) / 100)

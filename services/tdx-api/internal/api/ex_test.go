@@ -152,6 +152,51 @@ func TestExHistoryTickReturnsUnifiedContract(t *testing.T) {
 	}
 }
 
+func TestExHistoryTickRejectsAllZeroUpstreamTemplate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	fetchTick := func(uint32, uint8, string) ([]proto.ExTickChartData, error) {
+		return []proto.ExTickChartData{
+			{Time: "09:30"},
+			{Time: "09:31"},
+		}, nil
+	}
+	preCloseSource := exTimeSharePreCloseSource{
+		now: func() time.Time { return time.Now() },
+		quote: func(uint8, string) (float64, error) {
+			return 0, errors.New("preClose must not be resolved for unavailable tick data")
+		},
+		dailyBars: func(uint8, string, time.Time) ([]proto.ExKLineItem, error) {
+			return nil, errors.New("preClose must not be resolved for unavailable tick data")
+		},
+	}
+
+	router := gin.New()
+	router.POST("/api/ex/history-tick", func(c *gin.Context) {
+		handleExHistoryTickWithDeps(c, fetchTick, preCloseSource)
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/ex/history-tick",
+		bytes.NewBufferString(`{"date":20250908,"category":31,"code":"00700"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422: %s", resp.Code, resp.Body.String())
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, resp.Body.String())
+	}
+	if body.Error != "该日期暂无历史分时数据" {
+		t.Fatalf("error = %q, want explicit unavailable-data message", body.Error)
+	}
+}
+
 func TestExHistoryTickReturnsBadGatewayWhenBaselineCannotBeResolved(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	fetchTick := func(uint32, uint8, string) ([]proto.ExTickChartData, error) {
