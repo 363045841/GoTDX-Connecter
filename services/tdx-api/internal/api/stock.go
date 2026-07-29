@@ -170,9 +170,7 @@ func newDefaultTimeSharePreCloseSource() timeSharePreCloseSource {
 			}
 			return quotes[0].PreClose, nil
 		},
-		dailyBars: func(market uint8, code string, date time.Time) ([]proto.SecurityBar, error) {
-			return StockKLineRange(4, market, code, 1, 0, date, date)
-		},
+		// dailyBars 由 handleStockHistoryTickWithDeps 按 kind 装配
 	}
 }
 
@@ -290,28 +288,23 @@ func handleStockHistoryTickWithDeps(
 		})
 	}
 	src := preCloseSource
-	if isIndexKLineRequest(req.Kind, req.Market, req.Code) {
-		indexMarket, indexCode := req.Market, req.Code
-		src.dailyBars = func(market uint8, code string, date time.Time) ([]proto.SecurityBar, error) {
-			// 指数日线协议不含昨收，往前多看几天来推算昨收
-			prevDate := date.AddDate(0, 0, -10)
-			bars, err := IndexKLineRange(4, indexMarket, indexCode, prevDate, date)
-			if err != nil {
-				return nil, err
+	if src.now == nil {
+		src.now = time.Now
+	}
+	if src.quote == nil {
+		src.quote = newDefaultTimeSharePreCloseSource().quote
+	}
+	// gotdx 已在 IndexBar/SecurityBar 填 PreClose；测例注入 dailyBars 时不覆盖
+	if src.dailyBars == nil {
+		if isIndexKLineRequest(req.Kind, req.Market, req.Code) {
+			indexMarket, indexCode := req.Market, req.Code
+			src.dailyBars = func(_ uint8, _ string, date time.Time) ([]proto.SecurityBar, error) {
+				return IndexKLineRange(4, indexMarket, indexCode, date, date)
 			}
-			yy, mm, dd := date.Date()
-			for i, b := range bars {
-				by, bm, bd := b.DateTime.Date()
-				if yy == by && mm == bm && dd == bd {
-					if i == 0 {
-						return nil, errors.New("previous index daily bar not found")
-					}
-					b.PreClose = bars[i-1].Close
-					b.LastClose = bars[i-1].Close
-					return []proto.SecurityBar{b}, nil
-				}
+		} else {
+			src.dailyBars = func(market uint8, code string, date time.Time) ([]proto.SecurityBar, error) {
+				return StockKLineRange(4, market, code, 1, 0, date, date)
 			}
-			return nil, nil
 		}
 	}
 	preClose, err := resolveTimeSharePreClose(req.Market, req.Code, req.Date, src)

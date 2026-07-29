@@ -110,23 +110,8 @@ func TestResolveTimeSharePreCloseRejectsZeroRealtimeBaseline(t *testing.T) {
 	}
 }
 
-func TestStockHistoryTickIndexRejectsMissingPreviousDailyBar(t *testing.T) {
-	originalFetchIndexBarsPage := fetchIndexBarsPage
-	t.Cleanup(func() { fetchIndexBarsPage = originalFetchIndexBarsPage })
-
+func TestStockHistoryTickIndexRejectsMissingPreCloseOnDailyBar(t *testing.T) {
 	loc := time.FixedZone("CST", 8*60*60)
-	fetchIndexBarsPage = func(_ uint16, _ uint8, _ string, start uint16, _ uint16) ([]proto.SecurityBar, error) {
-		if start > 0 {
-			return nil, nil
-		}
-		return []proto.SecurityBar{{
-			Close:    10713.07,
-			Year:     2024,
-			Month:    12,
-			Day:      13,
-			DateTime: time.Date(2024, 12, 13, 15, 0, 0, 0, loc),
-		}}, nil
-	}
 	fetchTick := func(uint32, uint8, string) ([]proto.HistoryMinuteTimeData, error) {
 		return []proto.HistoryMinuteTimeData{}, nil
 	}
@@ -134,6 +119,18 @@ func TestStockHistoryTickIndexRejectsMissingPreviousDailyBar(t *testing.T) {
 		now: func() time.Time { return time.Date(2026, 7, 27, 10, 0, 0, 0, loc) },
 		quote: func(uint8, string) (float64, error) {
 			return 0, errors.New("realtime quote must not be called")
+		},
+		dailyBars: func(market uint8, code string, date time.Time) ([]proto.SecurityBar, error) {
+			if market != 0 || code != "399001" || date.Format("20060102") != "20241213" {
+				t.Fatalf("daily bar request = %d/%s/%s", market, code, date.Format("20060102"))
+			}
+			return []proto.SecurityBar{{
+				Close:    10713.07,
+				Year:     2024,
+				Month:    12,
+				Day:      13,
+				DateTime: time.Date(2024, 12, 13, 15, 0, 0, 0, loc),
+			}}, nil
 		},
 	}
 
@@ -153,25 +150,13 @@ func TestStockHistoryTickIndexRejectsMissingPreviousDailyBar(t *testing.T) {
 	if resp.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502: %s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(resp.Body.String(), "previous index daily bar not found") {
-		t.Fatalf("response = %s, want missing previous daily bar error", resp.Body.String())
+	if !strings.Contains(resp.Body.String(), "invalid historical preClose") {
+		t.Fatalf("response = %s, want invalid historical preClose", resp.Body.String())
 	}
 }
 
-func TestStockHistoryTickIndexUsesPreviousTradingDayClose(t *testing.T) {
-	originalFetchIndexBarsPage := fetchIndexBarsPage
-	t.Cleanup(func() { fetchIndexBarsPage = originalFetchIndexBarsPage })
-
+func TestStockHistoryTickIndexUsesGotdxPreClose(t *testing.T) {
 	loc := time.FixedZone("CST", 8*60*60)
-	fetchIndexBarsPage = func(_ uint16, _ uint8, _ string, start uint16, _ uint16) ([]proto.SecurityBar, error) {
-		if start > 0 {
-			return nil, nil
-		}
-		return []proto.SecurityBar{
-			{Close: 10957.13, Year: 2024, Month: 12, Day: 12, DateTime: time.Date(2024, 12, 12, 15, 0, 0, 0, loc)},
-			{Close: 10713.07, Year: 2024, Month: 12, Day: 13, DateTime: time.Date(2024, 12, 13, 15, 0, 0, 0, loc)},
-		}, nil
-	}
 	fetchTick := func(uint32, uint8, string) ([]proto.HistoryMinuteTimeData, error) {
 		return []proto.HistoryMinuteTimeData{}, nil
 	}
@@ -179,6 +164,20 @@ func TestStockHistoryTickIndexUsesPreviousTradingDayClose(t *testing.T) {
 		now: func() time.Time { return time.Date(2026, 7, 27, 10, 0, 0, 0, loc) },
 		quote: func(uint8, string) (float64, error) {
 			return 0, errors.New("realtime quote must not be called")
+		},
+		dailyBars: func(market uint8, code string, date time.Time) ([]proto.SecurityBar, error) {
+			if market != 0 || code != "399001" || date.Format("20060102") != "20241213" {
+				t.Fatalf("daily bar request = %d/%s/%s", market, code, date.Format("20060102"))
+			}
+			return []proto.SecurityBar{{
+				PreClose:  10957.13,
+				LastClose: 10957.13,
+				Close:     10713.07,
+				Year:      2024,
+				Month:     12,
+				Day:       13,
+				DateTime:  time.Date(2024, 12, 13, 15, 0, 0, 0, loc),
+			}}, nil
 		},
 	}
 
@@ -199,7 +198,7 @@ func TestStockHistoryTickIndexUsesPreviousTradingDayClose(t *testing.T) {
 		t.Fatalf("status = %d, want 200: %s", resp.Code, resp.Body.String())
 	}
 	if !strings.Contains(resp.Body.String(), `"preClose":10957.13`) {
-		t.Fatalf("response = %s, want previous trading day close", resp.Body.String())
+		t.Fatalf("response = %s, want gotdx PreClose 10957.13", resp.Body.String())
 	}
 }
 
