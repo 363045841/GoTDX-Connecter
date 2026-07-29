@@ -34,22 +34,22 @@ $targets = switch ($Service) {
 
 function Get-PortOwners {
   param([int[]]$Ports)
-  $ids = [System.Collections.Generic.HashSet[int]]::new()
+  $ids = [System.Collections.Generic.List[int]]::new()
   foreach ($port in $Ports) {
     Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue |
       Where-Object { $_.State -in @('Listen', 'Established', 'TimeWait', 'CloseWait') } |
       ForEach-Object {
         if ($_.OwningProcess -and $_.OwningProcess -gt 0) {
-          [void]$ids.Add([int]$_.OwningProcess)
+          $ids.Add([int]$_.OwningProcess)
         }
       }
   }
-  return @($ids)
+  , @($ids.ToArray())
 }
 
 function Get-NamedOwners {
   param([string[]]$Names)
-  $ids = [System.Collections.Generic.HashSet[int]]::new()
+  $ids = [System.Collections.Generic.List[int]]::new()
   foreach ($name in $Names) {
     Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
       # go run . tdx 会留下父 launcher + 子 tdx-api；两边都杀
@@ -58,17 +58,21 @@ function Get-NamedOwners {
         if ($Service -eq 'tdx' -and $cmd -notmatch '\b(tdx|tdx-api|gotdx)\b') { continue }
         if ($Service -eq 'binance' -and $cmd -notmatch '\b(binance|binance-api)\b') { continue }
       }
-      [void]$ids.Add([int]$_.Id)
+      $ids.Add([int]$_.Id)
     }
   }
-  return @($ids)
+  , @($ids.ToArray())
 }
 
 $portPids = Get-PortOwners -Ports $targets.Ports
 $namePids = Get-NamedOwners -Names $targets.Names
-$allPids = @($portPids + $namePids | Select-Object -Unique | Sort-Object)
+$merged = [System.Collections.Generic.HashSet[int]]::new()
+foreach ($procId in @($portPids) + @($namePids)) {
+  if ($procId -gt 0) { [void]$merged.Add([int]$procId) }
+}
+$allPids = @($merged | Sort-Object)
 
-if (-not $allPids -or $allPids.Count -eq 0) {
+if ($allPids.Count -eq 0) {
   Write-Host "No matching processes for service='$Service' (ports: $($targets.Ports -join ', '))."
   exit 0
 }
