@@ -132,7 +132,8 @@ type stockHistoryTickItem struct {
 	Timestamp string  `json:"timestamp"`
 	Price     float64 `json:"Price"`
 	Avg       float64 `json:"Avg"`
-	Vol       int     `json:"Vol"`
+	Volume    *int    `json:"Volume,omitempty"`
+	Amount    *int64  `json:"Amount,omitempty"`
 }
 
 // stockHistoryTickResponse 分时统一契约：点列 + 昨收元数据。
@@ -283,6 +284,7 @@ func handleStockHistoryTickWithDeps(
 	day := int(req.Date % 100)
 	loc := time.FixedZone("CST", 8*60*60)
 	base := time.Date(year, time.Month(month), day, 0, 0, 0, 0, loc)
+	isIndex := isIndexKLineRequest(req.Kind, req.Market, req.Code)
 
 	var first *stockHistoryTickItem
 	if len(tick) > 0 {
@@ -295,7 +297,14 @@ func handleStockHistoryTickWithDeps(
 				Timestamp: base.Add(9*time.Hour + 30*time.Minute).Format("2006-01-02T15:04:05+08:00"),
 				Price:     trade.Price,
 				Avg:       trade.Price,
-				Vol:       trade.Vol,
+			}
+			if isIndex {
+				// 指数逐笔 Vol 为百元，统一转换为元再向前端传递。
+				amount := int64(trade.Vol) * 100
+				first.Amount = &amount
+			} else {
+				volume := trade.Vol
+				first.Volume = &volume
 			}
 		}
 	}
@@ -315,12 +324,27 @@ func handleStockHistoryTickWithDeps(
 		} else {
 			t = base.Add(13*time.Hour + 1*time.Minute + time.Duration(i-120)*time.Minute)
 		}
-		resp = append(resp, stockHistoryTickItem{
+		point := stockHistoryTickItem{
 			Timestamp: t.Format("2006-01-02T15:04:05+08:00"),
 			Price:     item.Price,
 			Avg:       item.Avg,
-			Vol:       item.Vol,
-		})
+		}
+		if isIndex {
+			// 指数分钟 Vol 为万元，统一转换为元；首分钟包含集合竞价。
+			amount := int64(item.Vol) * 10_000
+			if i == 0 && first != nil && first.Amount != nil {
+				amount = max(0, amount-*first.Amount)
+			}
+			point.Amount = &amount
+		} else {
+			volume := item.Vol
+			if i == 0 && first != nil && first.Volume != nil {
+				// gotdx 首分钟包含集合竞价，补出 09:30 后需从 09:31 扣除以避免重复。
+				volume = max(0, volume-*first.Volume)
+			}
+			point.Volume = &volume
+		}
+		resp = append(resp, point)
 	}
 	src := preCloseSource
 	if src.now == nil {
@@ -331,7 +355,7 @@ func handleStockHistoryTickWithDeps(
 	}
 	// gotdx 已在 IndexBar/SecurityBar 填 PreClose；测例注入 dailyBars 时不覆盖
 	if src.dailyBars == nil {
-		if isIndexKLineRequest(req.Kind, req.Market, req.Code) {
+		if isIndex {
 			indexMarket, indexCode := req.Market, req.Code
 			src.dailyBars = func(_ uint8, _ string, date time.Time) ([]proto.SecurityBar, error) {
 				return IndexKLineRange(4, indexMarket, indexCode, date, date)

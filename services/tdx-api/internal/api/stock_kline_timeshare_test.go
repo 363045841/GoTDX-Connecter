@@ -56,11 +56,12 @@ func TestIndexPageSizeStaysBelowGetIndexBarsLimit(t *testing.T) {
 
 // 验证分时统一响应包含昨收与数据点。
 func TestStockHistoryTickResponseIncludesPreClose(t *testing.T) {
+	volume := 100
 	response := newStockHistoryTickResponse(8.3, []stockHistoryTickItem{{
 		Timestamp: "2026-07-27T09:30:00+08:00",
 		Price:     8.5,
 		Avg:       8.5,
-		Vol:       100,
+		Volume:    &volume,
 	}})
 
 	if response.PreClose != 8.3 {
@@ -304,11 +305,68 @@ func TestStockHistoryTickPrependsOpeningTradeOnCurrentDate(t *testing.T) {
 	if body.Data[0].Timestamp != "2026-07-29T09:30:00+08:00" {
 		t.Fatalf("first timestamp = %q, want 09:30", body.Data[0].Timestamp)
 	}
-	if body.Data[0].Price != 8.95 || body.Data[0].Vol != 1200 {
-		t.Fatalf("opening tick = %#v, want price 8.95 vol 1200", body.Data[0])
+	if body.Data[0].Price != 8.95 || body.Data[0].Volume == nil || *body.Data[0].Volume != 1200 {
+		t.Fatalf("opening tick = %#v, want price 8.95 Volume 1200", body.Data[0])
 	}
-	if body.Data[1].Timestamp != "2026-07-29T09:31:00+08:00" || body.Data[1].Price != 8.97 {
-		t.Fatalf("second tick = %#v, want 09:31 price 8.97", body.Data[1])
+	if body.Data[0].Amount != nil {
+		t.Fatalf("opening Amount = %#v, want nil", body.Data[0].Amount)
+	}
+	if body.Data[1].Timestamp != "2026-07-29T09:31:00+08:00" || body.Data[1].Price != 8.97 || body.Data[1].Volume == nil || *body.Data[1].Volume != 47946 {
+		t.Fatalf("second tick = %#v, want 09:31 price 8.97 Volume 47946", body.Data[1])
+	}
+}
+
+// 验证指数开盘成交额换算为万元，并从 09:31 合计值中扣除以避免重复。
+func TestStockHistoryTickNormalizesIndexOpeningAmount(t *testing.T) {
+	loc := time.FixedZone("CST", 8*60*60)
+	original := fetchOpeningTrade
+	t.Cleanup(func() { fetchOpeningTrade = original })
+
+	fetchOpeningTrade = func(uint32, uint8, string, time.Time) (openingTrade, bool) {
+		return openingTrade{Price: 3812.11, Vol: 69728381}, true
+	}
+	fetchTick := func(uint32, uint8, string) ([]proto.HistoryMinuteTimeData, error) {
+		return []proto.HistoryMinuteTimeData{{Price: 3826.24, Avg: 3817.4716, Vol: 2918209}}, nil
+	}
+	preCloseSource := timeSharePreCloseSource{
+		now:   func() time.Time { return time.Date(2026, 7, 30, 11, 0, 0, 0, loc) },
+		quote: func(uint8, string) (float64, error) { return 3828.47, nil },
+	}
+
+	router := gin.New()
+	router.POST("/api/stock/history-tick", func(c *gin.Context) {
+		handleStockHistoryTickWithDeps(c, fetchTick, preCloseSource)
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/stock/history-tick",
+		bytes.NewBufferString(`{"date":20260730,"market":1,"code":"000001"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.Code, resp.Body.String())
+	}
+	var body stockHistoryTickResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, resp.Body.String())
+	}
+	if len(body.Data) != 2 {
+		t.Fatalf("data len = %d, want 2", len(body.Data))
+	}
+	if body.Data[0].Amount == nil || *body.Data[0].Amount != 6_972_838_100 {
+		t.Fatalf("09:30 Amount = %#v, want 6972838100 元", body.Data[0].Amount)
+	}
+	if body.Data[0].Volume != nil {
+		t.Fatalf("09:30 Volume = %#v, want nil", body.Data[0].Volume)
+	}
+	if body.Data[1].Amount == nil || *body.Data[1].Amount != 22_209_251_900 {
+		t.Fatalf("09:31 Amount = %#v, want 22209251900 元", body.Data[1].Amount)
+	}
+	if body.Data[1].Volume != nil {
+		t.Fatalf("09:31 Volume = %#v, want nil", body.Data[1].Volume)
 	}
 }
 

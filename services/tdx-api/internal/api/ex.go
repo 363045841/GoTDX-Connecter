@@ -281,7 +281,6 @@ func handleExHistoryTickWithDeps(
 			Timestamp: ts.Format("2006-01-02T15:04:05-07:00"),
 			Price:     item.Price,
 			Avg:       item.Avg,
-			Vol:       item.Vol,
 		})
 	}
 

@@ -186,8 +186,11 @@ func TestExHistoryTickReturnsUnifiedContract(t *testing.T) {
 	if body.Data[0].Timestamp != "2026-07-24T09:30:00+08:00" {
 		t.Fatalf("first timestamp = %q, want 2026-07-24T09:30:00+08:00", body.Data[0].Timestamp)
 	}
-	if body.Data[0].Price != 18.6 || body.Data[0].Avg != 18.55 || body.Data[0].Vol != 100 {
+	if body.Data[0].Price != 18.6 || body.Data[0].Avg != 18.55 {
 		t.Fatalf("first tick = %#v", body.Data[0])
+	}
+	if body.Data[0].Volume != nil || body.Data[0].Amount != nil {
+		t.Fatalf("first tick metrics = %#v, want no unverified volume or amount", body.Data[0])
 	}
 }
 
