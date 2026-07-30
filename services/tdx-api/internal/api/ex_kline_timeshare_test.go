@@ -1,3 +1,4 @@
+// 本文件测试扩展行情K线与历史分时接口的日期、昨收和错误处理逻辑。
 package api
 
 import (
@@ -14,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// 验证扩展行情日K按日期区间过滤、去重和排序。
 func TestFilterExKLineByDateKeepsBarsInRange(t *testing.T) {
 	loc := time.Local
 	klines := []proto.ExKLineItem{
@@ -38,6 +40,7 @@ func TestFilterExKLineByDateKeepsBarsInRange(t *testing.T) {
 	}
 }
 
+// 验证扩展行情当日分时优先使用实时昨收。
 func TestResolveExTimeSharePreCloseUsesQuoteOnCurrentDate(t *testing.T) {
 	loc := time.FixedZone("CST", 8*60*60)
 	source := exTimeSharePreCloseSource{
@@ -62,6 +65,7 @@ func TestResolveExTimeSharePreCloseUsesQuoteOnCurrentDate(t *testing.T) {
 	}
 }
 
+// 验证港股实时昨收为零时回退目标日K线。
 func TestResolveExTimeSharePreCloseFallsBackToDailyBarWhenQuoteZero(t *testing.T) {
 	loc := time.FixedZone("CST", 8*60*60)
 	source := exTimeSharePreCloseSource{
@@ -95,6 +99,7 @@ func TestResolveExTimeSharePreCloseFallsBackToDailyBarWhenQuoteZero(t *testing.T
 	}
 }
 
+// 验证扩展行情历史分时使用目标日K线昨收。
 func TestResolveExTimeSharePreCloseUsesTargetDailyBarForHistoricalDate(t *testing.T) {
 	loc := time.FixedZone("CST", 8*60*60)
 	source := exTimeSharePreCloseSource{
@@ -124,6 +129,7 @@ func TestResolveExTimeSharePreCloseUsesTargetDailyBarForHistoricalDate(t *testin
 	}
 }
 
+// 验证扩展行情历史分时返回统一响应结构。
 func TestExHistoryTickReturnsUnifiedContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	fetchTick := func(date uint32, category uint8, code string) ([]proto.ExTickChartData, error) {
@@ -185,6 +191,7 @@ func TestExHistoryTickReturnsUnifiedContract(t *testing.T) {
 	}
 }
 
+// 验证扩展行情全零分时模板被识别为无历史数据。
 func TestExHistoryTickRejectsAllZeroUpstreamTemplate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	fetchTick := func(uint32, uint8, string) ([]proto.ExTickChartData, error) {
@@ -230,6 +237,7 @@ func TestExHistoryTickRejectsAllZeroUpstreamTemplate(t *testing.T) {
 	}
 }
 
+// 验证扩展行情昨收无法解析时返回网关错误。
 func TestExHistoryTickReturnsBadGatewayWhenBaselineCannotBeResolved(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	fetchTick := func(uint32, uint8, string) ([]proto.ExTickChartData, error) {

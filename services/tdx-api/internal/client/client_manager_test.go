@@ -1,3 +1,4 @@
+// 本文件测试行情客户端管理器的并发、重连、重试和关闭行为。
 package client
 
 import (
@@ -35,6 +36,7 @@ func testManager(t *testing.T, domains ...Domain) (*Manager, map[Domain]*atomic.
 	return manager, builds
 }
 
+// 验证重连等待正在执行的客户端租约释放。
 func TestReconnectWaitsForActiveLease(t *testing.T) {
 	manager, _ := testManager(t, DomainMain)
 	started := make(chan struct{})
@@ -70,6 +72,7 @@ func TestReconnectWaitsForActiveLease(t *testing.T) {
 	}
 }
 
+// 验证并发请求失败时仅重连一次客户端代际。
 func TestConcurrentFailuresReconnectOneClientGeneration(t *testing.T) {
 	manager, builds := testManager(t, DomainMain)
 	initialGeneration := manager.generation(DomainMain)
@@ -97,6 +100,7 @@ func TestConcurrentFailuresReconnectOneClientGeneration(t *testing.T) {
 	}
 }
 
+// 验证并发冷启动请求只创建一个客户端。
 func TestConcurrentColdRequestsCreateOneClient(t *testing.T) {
 	var builds atomic.Int32
 	manager := newManager(map[Domain]domainConfig{
@@ -131,6 +135,7 @@ func TestConcurrentColdRequestsCreateOneClient(t *testing.T) {
 	}
 }
 
+// 验证主站、扩展和MAC行情域独立重连。
 func TestDomainsReconnectIndependently(t *testing.T) {
 	manager, builds := testManager(t, DomainMain, DomainEx, DomainMAC)
 	if err := manager.Reconnect(DomainEx); err != nil {
@@ -141,6 +146,7 @@ func TestDomainsReconnectIndependently(t *testing.T) {
 	}
 }
 
+// 验证可恢复请求失败仅重试一次。
 func TestExecuteRetriesRecoverableFailureOnce(t *testing.T) {
 	manager, builds := testManager(t, DomainMain)
 	var calls int
@@ -159,6 +165,7 @@ func TestExecuteRetriesRecoverableFailureOnce(t *testing.T) {
 	}
 }
 
+// 验证包装的 gotdx 断连错误被识别为可恢复错误。
 func TestExecuteNormalizesWrappedGotdxDisconnectedError(t *testing.T) {
 	manager, builds := testManager(t, DomainMain)
 	var calls int
@@ -177,6 +184,7 @@ func TestExecuteNormalizesWrappedGotdxDisconnectedError(t *testing.T) {
 	}
 }
 
+// 验证协议或数据错误不触发客户端重试。
 func TestExecuteDoesNotRetryProtocolDataFailure(t *testing.T) {
 	manager, builds := testManager(t, DomainMain)
 	var calls int
@@ -192,6 +200,7 @@ func TestExecuteDoesNotRetryProtocolDataFailure(t *testing.T) {
 	}
 }
 
+// 验证关闭后的客户端管理器拒绝新请求。
 func TestCloseRejectsNewRequests(t *testing.T) {
 	manager, _ := testManager(t, DomainMain)
 	if err := manager.Close(); err != nil {
@@ -205,6 +214,7 @@ func TestCloseRejectsNewRequests(t *testing.T) {
 	}
 }
 
+// 验证关闭等待活动客户端租约完成。
 func TestCloseWaitsForActiveLease(t *testing.T) {
 	manager, _ := testManager(t, DomainMain)
 	started := make(chan struct{})
@@ -236,6 +246,7 @@ func TestCloseWaitsForActiveLease(t *testing.T) {
 	}
 }
 
+// 验证状态检查要求每个已配置行情域均就绪。
 func TestStatusRequiresEveryConfiguredDomain(t *testing.T) {
 	manager, _ := testManager(t, DomainMain, DomainEx, DomainMAC)
 	if status := manager.Status(); !status.Ready {
@@ -251,6 +262,7 @@ func TestStatusRequiresEveryConfiguredDomain(t *testing.T) {
 	}
 }
 
+// 验证重连失败保留旧就绪客户端并关闭替换客户端。
 func TestFailedReconnectRetainsReadyClientAndClosesReplacement(t *testing.T) {
 	var builds atomic.Int32
 	var closes atomic.Int32
@@ -292,6 +304,7 @@ func TestFailedReconnectRetainsReadyClientAndClosesReplacement(t *testing.T) {
 	_ = manager.Close()
 }
 
+// 验证请求失败且恢复失败后将客户端代际标记为未就绪。
 func TestRequestFailureAndFailedRecoveryMarksGenerationUnready(t *testing.T) {
 	var builds atomic.Int32
 	manager := newManager(map[Domain]domainConfig{
@@ -322,6 +335,7 @@ func TestRequestFailureAndFailedRecoveryMarksGenerationUnready(t *testing.T) {
 	_ = manager.Close()
 }
 
+// 验证重连期间关闭会拒绝已连通的替换客户端。
 func TestCloseDuringReconnectRejectsConnectedReplacement(t *testing.T) {
 	connectStarted := make(chan struct{})
 	releaseConnect := make(chan struct{})

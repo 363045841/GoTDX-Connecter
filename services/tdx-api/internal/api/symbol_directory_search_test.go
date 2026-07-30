@@ -1,3 +1,4 @@
+// 本文件测试证券目录缓存、持久化快照和搜索接口行为。
 package api
 
 import (
@@ -83,6 +84,7 @@ func newSearchTestCache(loader *fakeSymbolDirectoryLoader, now *time.Time) *symb
 	return cache
 }
 
+// 验证符号目录缓存优先使用新鲜的持久化快照。
 func TestSymbolDirectoryCacheUsesFreshPersistedSnapshot(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	loader := &fakeSymbolDirectoryLoader{err: errors.New("loader must not be called")}
@@ -105,6 +107,7 @@ func TestSymbolDirectoryCacheUsesFreshPersistedSnapshot(t *testing.T) {
 	}
 }
 
+// 验证刷新失败时符号目录缓存回退过期持久化快照。
 func TestSymbolDirectoryCacheUsesStalePersistedSnapshotWhenRefreshFails(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	loader := &fakeSymbolDirectoryLoader{err: errors.New("TDX unavailable")}
@@ -127,6 +130,7 @@ func TestSymbolDirectoryCacheUsesStalePersistedSnapshotWhenRefreshFails(t *testi
 	}
 }
 
+// 验证符号目录刷新成功后写入持久化存储。
 func TestSymbolDirectoryCachePersistsSuccessfulRefresh(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{
@@ -148,6 +152,7 @@ func TestSymbolDirectoryCachePersistsSuccessfulRefresh(t *testing.T) {
 	}
 }
 
+// 验证持久化读写失败不影响符号目录缓存可用性。
 func TestSymbolDirectoryCacheIgnoresStoreReadAndWriteFailures(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{
@@ -169,6 +174,7 @@ func TestSymbolDirectoryCacheIgnoresStoreReadAndWriteFailures(t *testing.T) {
 	}
 }
 
+// 验证不同缓存实例复用同一SQLite目录快照。
 func TestSymbolDirectoryCacheReusesSQLiteSnapshotAcrossInstances(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	path := filepath.Join(t.TempDir(), "symbols.db")
@@ -206,6 +212,7 @@ func TestSymbolDirectoryCacheReusesSQLiteSnapshotAcrossInstances(t *testing.T) {
 	}
 }
 
+// 验证符号搜索优先匹配代码并应用结果上限。
 func TestSymbolSearchRanksCodeBeforeNameAndAppliesLimit(t *testing.T) {
 	now := time.Unix(0, 0)
 	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{
@@ -235,6 +242,7 @@ func TestSymbolSearchRanksCodeBeforeNameAndAppliesLimit(t *testing.T) {
 	}
 }
 
+// 验证符号搜索返回 gotdx 元数据并去重。
 func TestSymbolSearchReturnsGotdxMetadataAndDeduplicates(t *testing.T) {
 	now := time.Unix(0, 0)
 	loader := &fakeSymbolDirectoryLoader{
@@ -281,6 +289,7 @@ func TestSymbolSearchReturnsGotdxMetadataAndDeduplicates(t *testing.T) {
 	}
 }
 
+// 验证未过期时符号目录缓存复用内存目录。
 func TestSymbolDirectoryCacheReusesFreshDirectory(t *testing.T) {
 	now := time.Unix(0, 0)
 	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{0: {{Code: "000001", Name: "Ping An"}}}}
@@ -296,6 +305,7 @@ func TestSymbolDirectoryCacheReusesFreshDirectory(t *testing.T) {
 	}
 }
 
+// 验证刷新失败后符号目录缓存回退旧内存目录。
 func TestSymbolDirectoryCacheFallsBackToOldDirectoryAfterRefreshFailure(t *testing.T) {
 	now := time.Unix(0, 0)
 	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{0: {{Code: "000001", Name: "Ping An"}}}}
@@ -322,6 +332,7 @@ func TestSymbolDirectoryCacheFallsBackToOldDirectoryAfterRefreshFailure(t *testi
 	}
 }
 
+// 验证符号搜索路由已注册并校验请求参数。
 func TestSymbolSearchHandlerValidatesRequestAndIsRegistered(t *testing.T) {
 	now := time.Unix(0, 0)
 	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{0: {{Code: "000001", Name: "Ping An"}}}}
