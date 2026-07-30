@@ -9,6 +9,7 @@ import (
 	"github.com/bensema/gotdx/proto"
 )
 
+// dayBar 创建指定日期的日K测试数据。
 func dayBar(y int, m time.Month, d int) proto.SecurityBar {
 	loc := time.Local
 	return proto.SecurityBar{

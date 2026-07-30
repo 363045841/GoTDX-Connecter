@@ -33,11 +33,13 @@ type fakeSymbolDirectoryStore struct {
 	replaceCalls int
 }
 
+// Load 返回预设的证券目录快照读取结果。
 func (s *fakeSymbolDirectoryStore) Load() (symbolDirectorySnapshot, bool, error) {
 	s.loadCalls++
 	return s.snapshot, s.found, s.loadErr
 }
 
+// Replace 记录待写入快照并返回预设写入错误。
 func (s *fakeSymbolDirectoryStore) Replace(snapshot symbolDirectorySnapshot) error {
 	s.replaceCalls++
 	if s.replaceErr != nil {
@@ -48,6 +50,7 @@ func (s *fakeSymbolDirectoryStore) Replace(snapshot symbolDirectorySnapshot) err
 	return nil
 }
 
+// StockAll 返回指定市场预设的股票目录数据。
 func (l *fakeSymbolDirectoryLoader) StockAll(market uint8) ([]proto.Security, error) {
 	l.stockCalls++
 	if l.err != nil {
@@ -56,6 +59,7 @@ func (l *fakeSymbolDirectoryLoader) StockAll(market uint8) ([]proto.Security, er
 	return l.stocks[market], nil
 }
 
+// ExCount 返回预设的扩展行情目录总数。
 func (l *fakeSymbolDirectoryLoader) ExCount() (uint32, error) {
 	if l.err != nil {
 		return 0, l.err
@@ -63,6 +67,7 @@ func (l *fakeSymbolDirectoryLoader) ExCount() (uint32, error) {
 	return uint32(len(l.ex)), nil
 }
 
+// ExList 返回预设的扩展行情目录分页数据。
 func (l *fakeSymbolDirectoryLoader) ExList(start uint32, count uint16) ([]proto.ExListItem, error) {
 	l.exCalls++
 	if l.err != nil {
@@ -78,6 +83,7 @@ func (l *fakeSymbolDirectoryLoader) ExList(start uint32, count uint16) ([]proto.
 	return l.ex[start:end], nil
 }
 
+// newSearchTestCache 创建使用测试加载器和可控时间的证券目录缓存。
 func newSearchTestCache(loader *fakeSymbolDirectoryLoader, now *time.Time) *symbolDirectoryCache {
 	cache := newSymbolDirectoryCache(loader, nil, 30*time.Minute)
 	cache.now = func() time.Time { return *now }

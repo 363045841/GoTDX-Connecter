@@ -12,6 +12,7 @@ import (
 	"github.com/bensema/gotdx"
 )
 
+// testManager 创建可统计客户端构建次数的测试管理器。
 func testManager(t *testing.T, domains ...Domain) (*Manager, map[Domain]*atomic.Int32) {
 	t.Helper()
 	builds := make(map[Domain]*atomic.Int32, len(domains))
