@@ -173,8 +173,10 @@ func newDefaultExTimeSharePreCloseSource() exTimeSharePreCloseSource {
 	}
 }
 
-// resolveExTimeSharePreClose 当日优先实时昨收；无效（港股 ExQuote 常为 0）则回退目标日线。
-// 历史日读目标日线昨收（PreClose → LastClose → Open）。
+// resolveExTimeSharePreClose 解析扩展行情分时昨收：目标日线为 SSOT，实时行情仅作当日日线缺失时的回退。
+// 不能优先实时行情：gotdx ExQuote.PreClose 对美股返回当日现价（非昨收），港股则常为 0，均不可靠；
+// 日线 ExKLine 的 PreClose 经实测与交易日历一致。
+// 日线昨收读取顺序：PreClose → LastClose → Open。
 func resolveExTimeSharePreClose(category uint8, code string, date uint32, source exTimeSharePreCloseSource) (float64, error) {
 	year := int(date / 10000)
 	month := time.Month((date % 10000) / 100)
@@ -185,28 +187,28 @@ func resolveExTimeSharePreClose(category uint8, code string, date uint32, source
 		return 0, fmt.Errorf("invalid history date: %d", date)
 	}
 
+	bars, dailyErr := source.dailyBars(category, code, target)
+	if dailyErr == nil && len(bars) > 0 {
+		preClose := exKLinePreClose(bars[0])
+		if math.IsNaN(preClose) || math.IsInf(preClose, 0) || preClose <= 0 {
+			return 0, fmt.Errorf("invalid daily preClose: %v", preClose)
+		}
+		return preClose, nil
+	}
+
+	// 当日日线缺失（如盘前尚无当日 bar）回退实时行情；历史日无回退。
 	now := source.now().In(loc)
 	currentDate := uint32(now.Year()*10000 + int(now.Month())*100 + now.Day())
 	if date == currentDate {
-		preClose, err := source.quote(category, code)
-		if err == nil && !math.IsNaN(preClose) && !math.IsInf(preClose, 0) && preClose > 0 {
+		preClose, quoteErr := source.quote(category, code)
+		if quoteErr == nil && !math.IsNaN(preClose) && !math.IsInf(preClose, 0) && preClose > 0 {
 			return preClose, nil
 		}
-		// quote 失败或 PreClose=0：回退日线（HK 扩展行情常见）
 	}
-
-	bars, err := source.dailyBars(category, code, target)
-	if err != nil {
-		return 0, err
+	if dailyErr != nil {
+		return 0, dailyErr
 	}
-	if len(bars) == 0 {
-		return 0, errors.New("target daily bar not found")
-	}
-	preClose := exKLinePreClose(bars[0])
-	if math.IsNaN(preClose) || math.IsInf(preClose, 0) || preClose <= 0 {
-		return 0, fmt.Errorf("invalid historical preClose: %v", preClose)
-	}
-	return preClose, nil
+	return 0, errors.New("target daily bar not found")
 }
 
 // exKLinePreClose 读取扩展日线昨收：PreClose → LastClose → Open。

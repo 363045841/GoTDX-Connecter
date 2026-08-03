@@ -40,19 +40,25 @@ func TestFilterExKLineByDateKeepsBarsInRange(t *testing.T) {
 	}
 }
 
-// 验证扩展行情当日分时优先使用实时昨收。
-func TestResolveExTimeSharePreCloseUsesQuoteOnCurrentDate(t *testing.T) {
+// 验证扩展行情当日分时优先目标日线昨收（实时 ExQuote.PreClose 对美股不可靠）。
+func TestResolveExTimeSharePreClosePrefersDailyBarOnCurrentDate(t *testing.T) {
 	loc := time.FixedZone("CST", 8*60*60)
 	source := exTimeSharePreCloseSource{
 		now: func() time.Time { return time.Date(2026, 7, 28, 10, 0, 0, 0, loc) },
 		quote: func(category uint8, code string) (float64, error) {
-			if category != 31 || code != "01810" {
-				t.Fatalf("quote request = %d/%s", category, code)
-			}
-			return 18.5, nil
+			t.Fatalf("quote must not be called when daily bar is available: %d/%s", category, code)
+			return 0, nil
 		},
-		dailyBars: func(uint8, string, time.Time) ([]proto.ExKLineItem, error) {
-			return nil, errors.New("daily bars must not be called when quote preClose is valid")
+		dailyBars: func(category uint8, code string, date time.Time) ([]proto.ExKLineItem, error) {
+			if category != 31 || code != "01810" || date.Format("20060102") != "20260728" {
+				t.Fatalf("daily bar request = %d/%s/%s", category, code, date.Format("20060102"))
+			}
+			return []proto.ExKLineItem{{
+				DateTime: time.Date(2026, 7, 28, 15, 0, 0, 0, loc),
+				PreClose: 18.5,
+				Open:     18.6,
+				Close:    18.7,
+			}}, nil
 		},
 	}
 
@@ -65,8 +71,8 @@ func TestResolveExTimeSharePreCloseUsesQuoteOnCurrentDate(t *testing.T) {
 	}
 }
 
-// 验证港股实时昨收为零时回退目标日K线。
-func TestResolveExTimeSharePreCloseFallsBackToDailyBarWhenQuoteZero(t *testing.T) {
+// 验证扩展行情当日日线缺失（如盘前尚无当日 bar）时回退实时行情昨收。
+func TestResolveExTimeSharePreCloseFallsBackToQuoteWhenCurrentDailyBarMissing(t *testing.T) {
 	loc := time.FixedZone("CST", 8*60*60)
 	source := exTimeSharePreCloseSource{
 		now: func() time.Time { return time.Date(2026, 7, 29, 12, 0, 0, 0, loc) },
@@ -74,28 +80,20 @@ func TestResolveExTimeSharePreCloseFallsBackToDailyBarWhenQuoteZero(t *testing.T
 			if category != 31 || code != "00700" {
 				t.Fatalf("quote request = %d/%s", category, code)
 			}
-			// 港股扩展实时 PreClose 常为 0
-			return 0, nil
+			return 447.2, nil
 		},
-		dailyBars: func(category uint8, code string, date time.Time) ([]proto.ExKLineItem, error) {
-			if category != 31 || code != "00700" || date.Format("20060102") != "20260729" {
-				t.Fatalf("daily bar request = %d/%s/%s", category, code, date.Format("20060102"))
-			}
-			return []proto.ExKLineItem{{
-				DateTime: time.Date(2026, 7, 29, 15, 0, 0, 0, loc),
-				PreClose: 447.2,
-				Open:     453.0,
-				Close:    466.4,
-			}}, nil
+		dailyBars: func(uint8, string, time.Time) ([]proto.ExKLineItem, error) {
+			// 当日日线尚未形成，返回空
+			return nil, nil
 		},
 	}
 
 	got, err := resolveExTimeSharePreClose(31, "00700", 20260729, source)
 	if err != nil {
-		t.Fatalf("resolve current preClose with zero quote: %v", err)
+		t.Fatalf("resolve current preClose via quote fallback: %v", err)
 	}
 	if got != 447.2 {
-		t.Fatalf("preClose = %v, want daily bar 447.2", got)
+		t.Fatalf("preClose = %v, want quote 447.2", got)
 	}
 }
 
