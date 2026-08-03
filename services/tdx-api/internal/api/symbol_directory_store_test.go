@@ -1,3 +1,4 @@
+// 本文件测试SQLite证券目录快照的读写、一致性和日志配置。
 package api
 
 import (
@@ -9,6 +10,7 @@ import (
 	"time"
 )
 
+// 验证SQLite符号目录存储持久化并替换快照。
 func TestSQLiteSymbolDirectoryStorePersistsAndReplacesSnapshot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "symbols.db")
 	store, err := newSQLiteSymbolDirectoryStore(path)
@@ -60,6 +62,7 @@ func TestSQLiteSymbolDirectoryStorePersistsAndReplacesSnapshot(t *testing.T) {
 	}
 }
 
+// 验证SQLite快照替换失败时保留原有快照。
 func TestSQLiteSymbolDirectoryStorePreservesSnapshotWhenReplacementFails(t *testing.T) {
 	store, err := newSQLiteSymbolDirectoryStore(filepath.Join(t.TempDir(), "symbols.db"))
 	if err != nil {
@@ -102,6 +105,7 @@ func TestSQLiteSymbolDirectoryStorePreservesSnapshotWhenReplacementFails(t *test
 	}
 }
 
+// 验证SQLite符号目录存储串行化并发写入。
 func TestSQLiteSymbolDirectoryStoreWaitsForConcurrentWriter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "symbols.db")
 	firstStore, err := newSQLiteSymbolDirectoryStore(path)
@@ -148,6 +152,7 @@ func TestSQLiteSymbolDirectoryStoreWaitsForConcurrentWriter(t *testing.T) {
 	}
 }
 
+// 验证SQLite快照替换期间读取结果保持一致。
 func TestSQLiteSymbolDirectoryStoreLoadsConsistentSnapshotDuringReplacement(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "symbols.db")
 	reader, err := newSQLiteSymbolDirectoryStore(path)
@@ -224,6 +229,7 @@ func TestSQLiteSymbolDirectoryStoreLoadsConsistentSnapshotDuringReplacement(t *t
 	}
 }
 
+// 验证SQLite符号目录存储启用WAL日志模式。
 func TestSQLiteSymbolDirectoryStoreUsesWAL(t *testing.T) {
 	store, err := newSQLiteSymbolDirectoryStore(filepath.Join(t.TempDir(), "symbols.db"))
 	if err != nil {

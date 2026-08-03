@@ -76,3 +76,12 @@ services/
 - K-line page size: `klinePageSize = 798` (`services/tdx-api/internal/api/stock.go`).
 - `client.Reprobe()` reconnects if hosts change at runtime.
 - Frontend caller: `KLineChartQuant` packages/core/src/data/{gotdx,binance}.ts
+
+## Comment Style
+
+- 每个文件必须有头部注释，说明文件用途。
+- 每个函数必须有注释，说明其职责、参数和返回值；简单函数可使用简短注释。
+- 关键代码必须有注释，说明实现意图、业务规则或不直观的处理逻辑。
+- 每个测试用例必须有中文注释，说明验证的行为和场景。
+- 注释正文使用中文，技术术语保留英文。
+- 注释必须简单明了，直接说明代码是什么或为什么这样实现，尽量使用一句话，避免冗长和重复代码本身的含义。

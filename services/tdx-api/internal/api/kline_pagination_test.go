@@ -1,3 +1,4 @@
+// 本文件测试股票、指数和扩展行情K线的分页及日期范围处理逻辑。
 package api
 
 import (
@@ -8,6 +9,7 @@ import (
 	"github.com/bensema/gotdx/proto"
 )
 
+// dayBar 创建指定日期的日K测试数据。
 func dayBar(y int, m time.Month, d int) proto.SecurityBar {
 	loc := time.Local
 	return proto.SecurityBar{
@@ -20,6 +22,7 @@ func dayBar(y int, m time.Month, d int) proto.SecurityBar {
 	}
 }
 
+// 验证K线分页按实际返回条数推进起始位置。
 func TestPaginateFromRecentAdvancesByActualLen(t *testing.T) {
 	// 短页 3 条：若误用 requested pageSize 推进会跳页
 	var starts []uint32
@@ -53,12 +56,13 @@ func TestPaginateFromRecentAdvancesByActualLen(t *testing.T) {
 	}
 }
 
+// 验证分页到达早于查询起始日的数据后停止请求。
 func TestPaginateFromRecentStopsWhenOldestBeforeStartDate(t *testing.T) {
 	var starts []uint32
 	pages := map[uint32][]proto.SecurityBar{
 		0: {dayBar(2024, 6, 1), dayBar(2024, 6, 2)},
 		2: {dayBar(2023, 1, 1), dayBar(2023, 1, 2)}, // 最旧已早于 startDate
-		4: {dayBar(2022, 1, 1)},                      // 不应再请求
+		4: {dayBar(2022, 1, 1)},                     // 不应再请求
 	}
 	startDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.Local)
 	got, err := paginateFromRecent(798, func(start uint32, count uint16) ([]proto.SecurityBar, error) {
@@ -76,6 +80,7 @@ func TestPaginateFromRecentStopsWhenOldestBeforeStartDate(t *testing.T) {
 	}
 }
 
+// 验证允许部分数据时保留已取得的K线分页结果。
 func TestPaginateFromRecentToleratesPartialError(t *testing.T) {
 	pages := 0
 	startDate := time.Date(2020, 1, 1, 0, 0, 0, 0, time.Local)
@@ -97,6 +102,7 @@ func TestPaginateFromRecentToleratesPartialError(t *testing.T) {
 	}
 }
 
+// 验证指数深页请求失败时缩小页大小并返回部分数据。
 func TestIndexKLineRangeUsesFallbackCountThenPartial(t *testing.T) {
 	prev := fetchIndexBarsPage
 	t.Cleanup(func() { fetchIndexBarsPage = prev })
@@ -137,6 +143,7 @@ func TestIndexKLineRangeUsesFallbackCountThenPartial(t *testing.T) {
 	}
 }
 
+// 验证扩展行情短页K线按实际条数继续分页。
 func TestExKLineRangeAdvancesByActualShortPage(t *testing.T) {
 	prev := fetchExKLinePage
 	t.Cleanup(func() { fetchExKLinePage = prev })
@@ -180,6 +187,7 @@ func TestExKLineRangeAdvancesByActualShortPage(t *testing.T) {
 	}
 }
 
+// 验证股票日K查询使用通用分页逻辑。
 func TestStockKLineRangeUsesPaginate(t *testing.T) {
 	prev := fetchStockKLinePage
 	t.Cleanup(func() { fetchStockKLinePage = prev })

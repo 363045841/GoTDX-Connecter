@@ -1,3 +1,4 @@
+// 本文件测试行情客户端心跳监控、重新探测和停止行为。
 package client
 
 import (
@@ -7,6 +8,7 @@ import (
 	"time"
 )
 
+// 验证心跳连续失败达到阈值后触发重新探测。
 func TestHeartbeatMonitorReprobesAfterConsecutiveFailures(t *testing.T) {
 	heartbeatErr := errors.New("heartbeat failed")
 	reprobeCalls := 0
@@ -29,6 +31,7 @@ func TestHeartbeatMonitorReprobesAfterConsecutiveFailures(t *testing.T) {
 	}
 }
 
+// 验证成功心跳重置连续失败计数。
 func TestHeartbeatMonitorSuccessResetsFailureCount(t *testing.T) {
 	results := []error{errors.New("first"), errors.New("second"), nil, errors.New("third"), errors.New("fourth")}
 	reprobeCalls := 0
@@ -49,6 +52,7 @@ func TestHeartbeatMonitorSuccessResetsFailureCount(t *testing.T) {
 	}
 }
 
+// 验证重新探测失败后仍保留失败阈值状态。
 func TestHeartbeatMonitorReprobeFailureKeepsThresholdReached(t *testing.T) {
 	reprobeCalls := 0
 	monitor := newHeartbeatMonitor(2, func() error {
@@ -66,6 +70,7 @@ func TestHeartbeatMonitorReprobeFailureKeepsThresholdReached(t *testing.T) {
 	}
 }
 
+// 验证重新探测成功后重置连续失败计数。
 func TestHeartbeatMonitorReprobeSuccessResetsFailureCount(t *testing.T) {
 	reprobeCalls := 0
 	monitor := newHeartbeatMonitor(2, func() error {
@@ -83,6 +88,7 @@ func TestHeartbeatMonitorReprobeSuccessResetsFailureCount(t *testing.T) {
 	}
 }
 
+// 验证心跳循环在上下文取消后停止。
 func TestRunHeartbeatStopsWhenContextIsCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ticks := make(chan time.Time)
@@ -102,6 +108,7 @@ func TestRunHeartbeatStopsWhenContextIsCancelled(t *testing.T) {
 	}
 }
 
+// 验证心跳启动拒绝无效的间隔和失败阈值配置。
 func TestStartHeartbeatRejectsInvalidConfiguration(t *testing.T) {
 	ctx := context.Background()
 	if _, err := StartHeartbeat(ctx, 0, 3); err == nil {
