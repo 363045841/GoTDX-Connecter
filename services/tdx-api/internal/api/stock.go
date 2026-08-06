@@ -278,6 +278,20 @@ func handleStockHistoryTickWithDeps(
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	resp, err := buildStockHistoryTickResponse(req, tick, preCloseSource)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "resolve preClose: " + err.Error()})
+		return
+	}
+	c.JSON(200, resp)
+}
+
+// buildStockHistoryTickResponse 将 GOTDX A 股原始分时数据转换为统一点列和昨收。
+func buildStockHistoryTickResponse(
+	req stockHistoryTickRequest,
+	tick []proto.HistoryMinuteTimeData,
+	preCloseSource timeSharePreCloseSource,
+) (stockHistoryTickResponse, error) {
 
 	year := int(req.Date / 10000)
 	month := int((req.Date % 10000) / 100)
@@ -368,10 +382,9 @@ func handleStockHistoryTickWithDeps(
 	}
 	preClose, err := resolveTimeSharePreClose(req.Market, req.Code, req.Date, src)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "resolve preClose: " + err.Error()})
-		return
+		return stockHistoryTickResponse{}, err
 	}
-	c.JSON(200, newStockHistoryTickResponse(preClose, resp))
+	return newStockHistoryTickResponse(preClose, resp), nil
 }
 
 func handleStockList(c *gin.Context) {

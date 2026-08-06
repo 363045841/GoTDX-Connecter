@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -280,23 +281,31 @@ func newSymbolSearchHandler(cache *symbolDirectoryCache) gin.HandlerFunc {
 			c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
 			return
 		}
-		query := strings.TrimSpace(req.Query)
-		if query == "" {
-			c.JSON(400, gin.H{"error": "query is required"})
-			return
-		}
-		limit := defaultSymbolSearchLimit
-		if req.Limit != nil && *req.Limit > 0 {
-			limit = *req.Limit
-		}
-		if limit > maxSymbolSearchLimit {
-			limit = maxSymbolSearchLimit
-		}
-		items, err := cache.search(query, limit)
+		items, err := searchSymbolDirectory(cache, req.Query, req.Limit)
 		if err != nil {
+			if err.Error() == "query is required" {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
 		c.JSON(200, items)
 	}
+}
+
+// searchSymbolDirectory 校验搜索条件并从目录缓存返回匹配品种。
+func searchSymbolDirectory(cache *symbolDirectoryCache, rawQuery string, requestedLimit *int) ([]symbolSearchItem, error) {
+	query := strings.TrimSpace(rawQuery)
+	if query == "" {
+		return nil, errors.New("query is required")
+	}
+	limit := defaultSymbolSearchLimit
+	if requestedLimit != nil && *requestedLimit > 0 {
+		limit = *requestedLimit
+	}
+	if limit > maxSymbolSearchLimit {
+		limit = maxSymbolSearchLimit
+	}
+	return cache.search(query, limit)
 }

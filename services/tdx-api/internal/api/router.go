@@ -124,5 +124,13 @@ func newRouterWithStatus(symbolCache *symbolDirectoryCache, status func() client
 	r.GET("/api/hosts/list", handleHostList)
 	r.POST("/api/symbol/search", newSymbolSearchHandler(symbolCache))
 
+	marketData := r.Group("/api/v1/market-data")
+	{
+		marketData.GET("/sources/:sourceId/probe", handleV1Probe(status))
+		marketData.POST("/instruments/search", handleV1Search(symbolCache))
+		marketData.POST("/bars", handleV1Bars)
+		marketData.POST("/timeshare", handleV1TimeShare)
+	}
+
 	return r
 }

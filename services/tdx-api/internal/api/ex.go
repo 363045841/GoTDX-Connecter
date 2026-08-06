@@ -145,6 +145,8 @@ type exHistoryTickRequest struct {
 	Code     string `json:"code"`
 }
 
+var errTimeShareDataUnavailable = errors.New("timeshare data unavailable")
+
 type exTimeSharePreCloseSource struct {
 	now       func() time.Time
 	quote     func(category uint8, code string) (float64, error)
@@ -250,6 +252,28 @@ func handleExHistoryTickWithDeps(
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	resp, err := buildExHistoryTickResponse(req, tick, preCloseSource)
+	if err != nil {
+		if errors.Is(err, errTimeShareDataUnavailable) {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "该日期暂无历史分时数据"})
+			return
+		}
+		if strings.HasPrefix(err.Error(), "resolve preClose:") {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, resp)
+}
+
+// buildExHistoryTickResponse 将 GOTDX 扩展市场原始分时数据转换为统一点列和昨收。
+func buildExHistoryTickResponse(
+	req exHistoryTickRequest,
+	tick []proto.ExTickChartData,
+	preCloseSource exTimeSharePreCloseSource,
+) (stockHistoryTickResponse, error) {
 	if len(tick) > 0 {
 		allZero := true
 		for _, item := range tick {
@@ -259,8 +283,7 @@ func handleExHistoryTickWithDeps(
 			}
 		}
 		if allZero {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "该日期暂无历史分时数据"})
-			return
+			return stockHistoryTickResponse{}, errTimeShareDataUnavailable
 		}
 	}
 
@@ -274,8 +297,7 @@ func handleExHistoryTickWithDeps(
 	for _, item := range tick {
 		ts, err := parseExTickClock(base, item.Time)
 		if err != nil {
-			c.JSON(500, gin.H{"error": "invalid tick time: " + err.Error()})
-			return
+			return stockHistoryTickResponse{}, fmt.Errorf("invalid tick time: %w", err)
 		}
 		resp = append(resp, stockHistoryTickItem{
 			Timestamp: ts.Format("2006-01-02T15:04:05-07:00"),
@@ -286,10 +308,9 @@ func handleExHistoryTickWithDeps(
 
 	preClose, err := resolveExTimeSharePreClose(req.Category, req.Code, req.Date, preCloseSource)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "resolve preClose: " + err.Error()})
-		return
+		return stockHistoryTickResponse{}, fmt.Errorf("resolve preClose: %w", err)
 	}
-	c.JSON(200, newStockHistoryTickResponse(preClose, resp))
+	return newStockHistoryTickResponse(preClose, resp), nil
 }
 
 // parseExTickClock 将 gotdx "HH:mm" 接到目标日 Asia/Shanghai 墙钟
