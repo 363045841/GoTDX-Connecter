@@ -74,35 +74,6 @@ func newRouterWithStatus(symbolCache *symbolDirectoryCache, status func() client
 		c.JSON(code, current)
 	})
 
-	stock := r.Group("/api/stock")
-	{
-		stock.POST("/quotes", handleStockQuotes)
-		stock.POST("/kline", handleStockKLine)
-		stock.POST("/kline-by-date", handleStockKLineByDate)
-		stock.POST("/kline-count", handleStockKLineCount)
-		stock.POST("/tick", handleStockTick)
-		stock.POST("/history-tick", handleStockHistoryTick)
-		stock.POST("/list", handleStockList)
-		stock.POST("/count", handleStockCount)
-		stock.POST("/index-info", handleStockIndexInfo)
-		stock.POST("/transaction", handleStockTransaction)
-		stock.POST("/history-transaction", handleStockHistoryTransaction)
-	}
-
-	ex := r.Group("/api/ex")
-	{
-		ex.POST("/count", handleExCount)
-		ex.POST("/list", handleExList)
-		ex.POST("/quote", handleExQuote)
-		ex.POST("/quotes", handleExQuotes)
-		ex.POST("/kline", handleExKLine)
-		ex.POST("/kline-by-date", handleExKLineByDate)
-		ex.POST("/tick", handleExTick)
-		ex.POST("/history-tick", handleExHistoryTick)
-		ex.POST("/history-transaction", handleExHistoryTransaction)
-		ex.POST("/table", handleExTable)
-	}
-
 	mac := r.Group("/api/mac")
 	{
 		mac.POST("/board-list", handleMACBoardList)
@@ -122,7 +93,6 @@ func newRouterWithStatus(symbolCache *symbolDirectoryCache, status func() client
 
 	r.POST("/api/hosts/probe", handleHostProbe)
 	r.GET("/api/hosts/list", handleHostList)
-	r.POST("/api/symbol/search", newSymbolSearchHandler(symbolCache))
 
 	marketData := r.Group("/api/v1/market-data")
 	{

@@ -12,7 +12,6 @@ import (
 	"KlineChartQuantGo/services/tdx-api/internal/client"
 	"github.com/bensema/gotdx/proto"
 	"github.com/bensema/gotdx/types"
-	"github.com/gin-gonic/gin"
 )
 
 // 搜索结果 params.kind：与 gotdx types 品种分类对齐，供 K 线路由使用
@@ -267,31 +266,6 @@ func extendedExchange(market uint8) string {
 		return label
 	}
 	return fmt.Sprintf("EX-%d", market)
-}
-
-type symbolSearchRequest struct {
-	Query string `json:"query"`
-	Limit *int   `json:"limit"`
-}
-
-func newSymbolSearchHandler(cache *symbolDirectoryCache) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req symbolSearchRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
-			return
-		}
-		items, err := searchSymbolDirectory(cache, req.Query, req.Limit)
-		if err != nil {
-			if err.Error() == "query is required" {
-				c.JSON(400, gin.H{"error": err.Error()})
-				return
-			}
-			c.JSON(500, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(200, items)
-	}
 }
 
 // searchSymbolDirectory 校验搜索条件并从目录缓存返回匹配品种。

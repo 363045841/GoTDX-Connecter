@@ -2,18 +2,13 @@
 package api
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/bensema/gotdx/proto"
-	"github.com/gin-gonic/gin"
 )
 
 type fakeSymbolDirectoryLoader struct {
@@ -335,38 +330,5 @@ func TestSymbolDirectoryCacheFallsBackToOldDirectoryAfterRefreshFailure(t *testi
 	}
 	if loader.stockCalls != failedRefreshCalls {
 		t.Fatalf("loader retried before backoff elapsed: calls = %d, want %d", loader.stockCalls, failedRefreshCalls)
-	}
-}
-
-// 验证符号搜索路由已注册并校验请求参数。
-func TestSymbolSearchHandlerValidatesRequestAndIsRegistered(t *testing.T) {
-	now := time.Unix(0, 0)
-	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{0: {{Code: "000001", Name: "Ping An"}}}}
-	router := newRouter(newSearchTestCache(loader, &now))
-	for _, body := range []string{"{", `{"query":"   "}`} {
-		req := httptest.NewRequest(http.MethodPost, "/api/symbol/search", bytes.NewBufferString(body))
-		req.Header.Set("Content-Type", "application/json")
-		resp := httptest.NewRecorder()
-		router.ServeHTTP(resp, req)
-		if resp.Code != http.StatusBadRequest {
-			t.Fatalf("POST /api/symbol/search %s = %d, want 400", body, resp.Code)
-		}
-	}
-
-	handlerRouter := gin.New()
-	handlerRouter.POST("/api/symbol/search", newSymbolSearchHandler(newSearchTestCache(loader, &now)))
-	req := httptest.NewRequest(http.MethodPost, "/api/symbol/search", bytes.NewBufferString(`{"query":"000001","limit":101}`))
-	req.Header.Set("Content-Type", "application/json")
-	resp := httptest.NewRecorder()
-	handlerRouter.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("handler status = %d, want 200: %s", resp.Code, resp.Body.String())
-	}
-	var items []symbolSearchItem
-	if err := json.Unmarshal(resp.Body.Bytes(), &items); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if len(items) != 1 {
-		t.Fatalf("items = %d, want 1", len(items))
 	}
 }
