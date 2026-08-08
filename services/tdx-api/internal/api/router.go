@@ -124,5 +124,7 @@ func newRouterWithStatus(symbolCache *symbolDirectoryCache, status func() client
 	r.GET("/api/hosts/list", handleHostList)
 	r.POST("/api/symbol/search", newSymbolSearchHandler(symbolCache))
 
+	registerV1Routes(r, symbolCache, status)
+
 	return r
 }

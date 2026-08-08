@@ -14,6 +14,10 @@ import (
 // indexFallbackPageSize 部分 start+798 会撞 gotdx invalid kline datetime，缩小 count 再试
 const indexFallbackPageSize uint16 = 400
 
+// maxKLinePages 分页页数硬上限：防御异常数据源（或注入点）持续返回新页导致内存无限增长。
+// 远大于任何真实 K 线历史深度，只兜底终止条件失效的场景。
+const maxKLinePages = 20000
+
 // paginateFromRecent 从最近向历史翻页，按实际条数推进 start。
 // toleratePartial：某页失败且已有数据时截断返回（指数深页 dateNum 损坏）。
 func paginateFromRecent[T any](
@@ -24,7 +28,11 @@ func paginateFromRecent[T any](
 	toleratePartial bool,
 ) ([]T, error) {
 	out := make([]T, 0, int(pageSize))
-	for start := uint32(0); ; {
+	for pageNum, start := 0, uint32(0); ; pageNum++ {
+		if pageNum >= maxKLinePages {
+			log.Printf("[gotdx] kline pagination aborted after %d pages (safety cap)", pageNum)
+			break
+		}
 		page, err := fetch(start, pageSize)
 		if err != nil {
 			if toleratePartial && len(out) > 0 {

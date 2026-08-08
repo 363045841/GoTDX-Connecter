@@ -247,42 +247,22 @@ func handleExHistoryTickWithDeps(
 		return
 	}
 
-	tick, err := fetchTick(req.Date, req.Category, req.Code)
+	points, err := buildExTimeSharePoints(req, fetchTick)
 	if err != nil {
+		if errors.Is(err, errV1NoTimeShareData) {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	if len(tick) > 0 {
-		allZero := true
-		for _, item := range tick {
-			if item.Price != 0 || item.Avg != 0 || item.Vol != 0 {
-				allZero = false
-				break
-			}
-		}
-		if allZero {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "该日期暂无历史分时数据"})
-			return
-		}
-	}
 
-	year := int(req.Date / 10000)
-	month := int((req.Date % 10000) / 100)
-	day := int(req.Date % 100)
-	loc := time.FixedZone("CST", 8*60*60)
-	base := time.Date(year, time.Month(month), day, 0, 0, 0, 0, loc)
-
-	resp := make([]stockHistoryTickItem, 0, len(tick))
-	for _, item := range tick {
-		ts, err := parseExTickClock(base, item.Time)
-		if err != nil {
-			c.JSON(500, gin.H{"error": "invalid tick time: " + err.Error()})
-			return
-		}
+	resp := make([]stockHistoryTickItem, 0, len(points))
+	for _, p := range points {
 		resp = append(resp, stockHistoryTickItem{
-			Timestamp: ts.Format("2006-01-02T15:04:05-07:00"),
-			Price:     item.Price,
-			Avg:       item.Avg,
+			Timestamp: p.at.Format("2006-01-02T15:04:05-07:00"),
+			Price:     p.price,
+			Avg:       p.avg,
 		})
 	}
 

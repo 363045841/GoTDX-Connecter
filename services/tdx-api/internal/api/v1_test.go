@@ -1,0 +1,389 @@
+// 本文件测试 V1 协议路由：envelope 包装、探测、品种搜索、K 线与分时映射。
+package api
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"testing"
+	"time"
+
+	"KlineChartQuantGo/services/tdx-api/internal/client"
+	"github.com/bensema/gotdx/proto"
+	"github.com/gin-gonic/gin"
+)
+
+func newV1TestRouter(cache *symbolDirectoryCache, status func() client.Status) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	registerV1Routes(router, cache, status)
+	return router
+}
+
+func v1Request(router http.Handler, method, path, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	return resp
+}
+
+// 验证探测心跳成功且全域就绪时返回在线。
+func TestV1ProbeOnline(t *testing.T) {
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	router.GET("/api/v1/market-data/sources/gotdx/probe", handleV1ProbeWithDeps(
+		func() client.Status { return client.Status{Ready: true} },
+		func() error { return nil },
+	))
+	resp := v1Request(router, http.MethodGet, "/api/v1/market-data/sources/gotdx/probe", "")
+
+	var body struct {
+		Data struct {
+			Status    string `json:"status"`
+			CheckedAt int64  `json:"checkedAt"`
+			LatencyMs int64  `json:"latencyMs"`
+		} `json:"data"`
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, resp.Body.String())
+	}
+	if body.Data.Status != "online" || body.RequestID == "" {
+		t.Fatalf("probe = %#v, want online with requestId", body)
+	}
+}
+
+// 验证心跳成功但全域未就绪时返回降级。
+func TestV1ProbeDegraded(t *testing.T) {
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: false} })
+	router.GET("/api/v1/market-data/sources/gotdx/probe", handleV1ProbeWithDeps(
+		func() client.Status { return client.Status{Ready: false} },
+		func() error { return nil },
+	))
+	resp := v1Request(router, http.MethodGet, "/api/v1/market-data/sources/gotdx/probe", "")
+
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"status":"degraded"`)) {
+		t.Fatalf("response = %s, want degraded", resp.Body.String())
+	}
+}
+
+// 验证心跳失败时返回离线并携带错误消息。
+func TestV1ProbeOffline(t *testing.T) {
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	router.GET("/api/v1/market-data/sources/gotdx/probe", handleV1ProbeWithDeps(
+		func() client.Status { return client.Status{Ready: true} },
+		func() error { return &errV1ProbeDown{} },
+	))
+	resp := v1Request(router, http.MethodGet, "/api/v1/market-data/sources/gotdx/probe", "")
+
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"status":"offline"`)) {
+		t.Fatalf("response = %s, want offline", resp.Body.String())
+	}
+}
+
+type errV1ProbeDown struct{}
+
+func (e *errV1ProbeDown) Error() string { return "heartbeat refused" }
+
+// 验证品种搜索映射为 V1 品种描述并包装在 envelope 中。
+func TestV1SearchMapsInstruments(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	loader := &fakeSymbolDirectoryLoader{
+		stocks: map[uint8][]proto.Security{
+			0: {{Code: "000001", Name: "平安银行"}},
+		},
+	}
+	cache := newSearchTestCache(loader, &now)
+	router := newV1TestRouter(cache, func() client.Status { return client.Status{Ready: true} })
+
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/instruments/search",
+		`{"sourceId":"gotdx","keyword":"000001","limit":10}`)
+
+	var body struct {
+		Data struct {
+			Items []struct {
+				ID         string `json:"id"`
+				SourceID   string `json:"sourceId"`
+				Symbol     string `json:"symbol"`
+				Name       string `json:"name"`
+				AssetClass string `json:"assetClass"`
+				Exchange   string `json:"exchange"`
+				SessionID  string `json:"sessionId"`
+				Capabilities struct {
+					Bars struct {
+						Periods     []string `json:"periods"`
+						Adjustments []string `json:"adjustments"`
+					} `json:"bars"`
+					TimeShare bool `json:"timeShare"`
+				} `json:"capabilities"`
+			} `json:"items"`
+		} `json:"data"`
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, resp.Body.String())
+	}
+	if len(body.Data.Items) != 1 || body.RequestID == "" {
+		t.Fatalf("items = %#v requestId=%q, want one", body.Data.Items, body.RequestID)
+	}
+	item := body.Data.Items[0]
+	if item.ID != "gotdx:stock:0:000001" || item.AssetClass != "stock" || item.SessionID != "CN" {
+		t.Fatalf("item = %#v, want gotdx:stock:0:000001 stock CN", item)
+	}
+	if len(item.Capabilities.Bars.Periods) != 10 {
+		t.Fatalf("periods = %v, want 10 standard periods", item.Capabilities.Bars.Periods)
+	}
+	if len(item.Capabilities.Bars.Adjustments) != 3 || item.Capabilities.Bars.Adjustments[2] != "none" {
+		t.Fatalf("adjustments = %v, want qfq/hfq/none", item.Capabilities.Bars.Adjustments)
+	}
+}
+
+// 验证搜索空关键字返回 INVALID_REQUEST 错误 envelope。
+func TestV1SearchRejectsEmptyKeyword(t *testing.T) {
+	router := newV1TestRouter(&symbolDirectoryCache{}, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/instruments/search",
+		`{"sourceId":"gotdx","keyword":"","limit":10}`)
+
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"INVALID_REQUEST"`)) {
+		t.Fatalf("response = %s, want INVALID_REQUEST", resp.Body.String())
+	}
+}
+
+// 验证股票 K 线请求按 kind=stock 路由、映射复权参数并输出 V1 条目。
+func TestV1BarsStock(t *testing.T) {
+	original := fetchStockKLinePage
+	t.Cleanup(func() { fetchStockKLinePage = original })
+	loc := time.FixedZone("CST", 8*60*60)
+	day := time.Date(2026, 7, 24, 15, 0, 0, 0, loc)
+	fetchStockKLinePage = func(category uint16, market uint8, code string, start, count uint16, times, adjust uint16) ([]proto.SecurityBar, error) {
+		if category != 4 || market != 1 || code != "600519" || times != 1 || adjust != 1 {
+			t.Fatalf("StockKLine = cat=%d m=%d c=%s times=%d adjust=%d", category, market, code, times, adjust)
+		}
+		// 首页返回单根 K 线，后续页为空，终止分页循环，避免无限追加
+		if start > 0 {
+			return nil, nil
+		}
+		return []proto.SecurityBar{{DateTime: day, Open: 10, High: 11, Low: 9, Close: 10.5, Vol: 1000, Amount: 500000, RisePrice: 0.5, RiseRate: 5}}, nil
+	}
+
+	from := time.Date(2026, 7, 24, 0, 0, 0, 0, loc).UnixMilli()
+	to := time.Date(2026, 7, 25, 0, 0, 0, 0, loc).UnixMilli()
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"period":"daily","adjustment":"qfq","from":`+strconv.FormatInt(from, 10)+`,"to":`+strconv.FormatInt(to, 10)+`}`)
+
+	var body struct {
+		Data struct {
+			InstrumentID string `json:"instrumentId"`
+			Period       string `json:"period"`
+			Adjustment   string `json:"adjustment"`
+			Timezone     string `json:"timezone"`
+			Items        []struct {
+				Timestamp     int64    `json:"timestamp"`
+				Close         float64  `json:"close"`
+				Volume        *float64 `json:"volume"`
+				ChangePercent *float64 `json:"changePercent"`
+			} `json:"items"`
+		} `json:"data"`
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, resp.Body.String())
+	}
+	if body.Data.InstrumentID != "gotdx:stock:1:600519" || body.Data.Period != "daily" || body.Data.Timezone != "Asia/Shanghai" || body.RequestID == "" {
+		t.Fatalf("series = %#v", body.Data)
+	}
+	if len(body.Data.Items) != 1 || body.Data.Items[0].Timestamp != day.UnixMilli() || body.Data.Items[0].Close != 10.5 {
+		t.Fatalf("items = %#v, want one 10.5 bar", body.Data.Items)
+	}
+	if body.Data.Items[0].Volume == nil || *body.Data.Items[0].Volume != 1000 {
+		t.Fatalf("volume = %v, want 1000", body.Data.Items[0].Volume)
+	}
+	if body.Data.Items[0].ChangePercent == nil || *body.Data.Items[0].ChangePercent != 5 {
+		t.Fatalf("changePercent = %v, want 5", body.Data.Items[0].ChangePercent)
+	}
+}
+
+// 验证指数 K 线请求按 kind=index 路由到指数接口。
+func TestV1BarsIndex(t *testing.T) {
+	original := fetchIndexBarsPage
+	t.Cleanup(func() { fetchIndexBarsPage = original })
+	loc := time.FixedZone("CST", 8*60*60)
+	day := time.Date(2026, 7, 24, 15, 0, 0, 0, loc)
+	fetchIndexBarsPage = func(category uint16, market uint8, code string, start, count uint16) ([]proto.SecurityBar, error) {
+		if category != 4 || market != 1 || code != "000001" {
+			t.Fatalf("GetIndexBars = cat=%d m=%d c=%s", category, market, code)
+		}
+		// 首页返回单根 K 线，后续页为空，终止分页循环，避免无限追加
+		if start > 0 {
+			return nil, nil
+		}
+		return []proto.SecurityBar{{DateTime: day, Open: 3500, High: 3510, Low: 3490, Close: 3505, Vol: 1}}, nil
+	}
+
+	from := time.Date(2026, 7, 24, 0, 0, 0, 0, loc).UnixMilli()
+	to := time.Date(2026, 7, 25, 0, 0, 0, 0, loc).UnixMilli()
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:index:1:000001","symbol":"000001","exchange":"SH","providerRef":{"market":1,"kind":"index"}},"period":"daily","adjustment":"none","from":`+strconv.FormatInt(from, 10)+`,"to":`+strconv.FormatInt(to, 10)+`}`)
+
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"close":3505`)) {
+		t.Fatalf("response = %s, want index close 3505", resp.Body.String())
+	}
+}
+
+// 验证扩展行情 K 线请求按 kind=ex 路由到扩展接口。
+func TestV1BarsEx(t *testing.T) {
+	original := fetchExKLinePage
+	t.Cleanup(func() { fetchExKLinePage = original })
+	loc := time.FixedZone("CST", 8*60*60)
+	day := time.Date(2026, 7, 24, 15, 0, 0, 0, loc)
+	fetchExKLinePage = func(category uint8, code string, period uint16, start uint32, count uint16, times uint16) ([]proto.ExKLineItem, error) {
+		if category != 31 || code != "HSI" || period != 4 {
+			t.Fatalf("ExKLine = cat=%d c=%s period=%d", category, code, period)
+		}
+		// 首页返回单根 K 线，后续页为空，模拟真实 safeExKLine 的翻页终止行为
+		if start > 0 {
+			return nil, nil
+		}
+		return []proto.ExKLineItem{{DateTime: day, Open: 18000, High: 18100, Low: 17900, Close: 18050, Vol: 100, Amount: 200000}}, nil
+	}
+
+	from := time.Date(2026, 7, 24, 0, 0, 0, 0, loc).UnixMilli()
+	to := time.Date(2026, 7, 25, 0, 0, 0, 0, loc).UnixMilli()
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:ex:31:HSI","symbol":"HSI","exchange":"HK","providerRef":{"category":31,"kind":"ex"}},"period":"daily","adjustment":"none","from":`+strconv.FormatInt(from, 10)+`,"to":`+strconv.FormatInt(to, 10)+`}`)
+
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"close":18050`)) {
+		t.Fatalf("response = %s, want ex close 18050", resp.Body.String())
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"timezone":"Asia/Hong_Kong"`)) {
+		t.Fatalf("response = %s, want HK timezone", resp.Body.String())
+	}
+}
+
+// 验证股票 K 线缺少 providerRef.market 时返回 INVALID_REQUEST。
+func TestV1BarsRejectsMissingMarket(t *testing.T) {
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"kind":"stock"}},"period":"daily","adjustment":"none","from":1,"to":2}`)
+
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"INVALID_REQUEST"`)) {
+		t.Fatalf("response = %s, want INVALID_REQUEST", resp.Body.String())
+	}
+}
+
+// 验证股票分时输出 unix 毫秒点与昨收。
+func TestV1TimeShareStock(t *testing.T) {
+	originalTick := v1FetchStockHistoryTick
+	originalOpening := fetchOpeningTrade
+	originalK := fetchStockKLinePage
+	t.Cleanup(func() {
+		v1FetchStockHistoryTick = originalTick
+		fetchOpeningTrade = originalOpening
+		fetchStockKLinePage = originalK
+	})
+	loc := time.FixedZone("CST", 8*60*60)
+	v1FetchStockHistoryTick = func(date uint32, market uint8, code string) ([]proto.HistoryMinuteTimeData, error) {
+		return []proto.HistoryMinuteTimeData{{Price: 8.5, Avg: 8.5, Vol: 100}}, nil
+	}
+	fetchOpeningTrade = func(uint32, uint8, string, time.Time) (openingTrade, bool) {
+		return openingTrade{}, false
+	}
+	fetchStockKLinePage = func(category uint16, market uint8, code string, start, count uint16, times, adjust uint16) ([]proto.SecurityBar, error) {
+		return []proto.SecurityBar{{DateTime: time.Date(2026, 7, 24, 15, 0, 0, 0, loc), PreClose: 8.4}}, nil
+	}
+
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/timeshare",
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"tradingDate":"2026-07-24"}`)
+
+	var body struct {
+		Data struct {
+			InstrumentID string `json:"instrumentId"`
+			TradingDate  string `json:"tradingDate"`
+			Timezone     string `json:"timezone"`
+			PreClose     float64 `json:"preClose"`
+			Items        []struct {
+				Timestamp int64   `json:"timestamp"`
+				Price     float64 `json:"price"`
+				Average   float64 `json:"average"`
+				Volume    *int    `json:"volume"`
+			} `json:"items"`
+		} `json:"data"`
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, resp.Body.String())
+	}
+	if body.Data.PreClose != 8.4 || body.Data.Timezone != "Asia/Shanghai" || body.RequestID == "" {
+		t.Fatalf("series = %#v", body.Data)
+	}
+	if len(body.Data.Items) != 1 {
+		t.Fatalf("items = %#v, want one point", body.Data.Items)
+	}
+	item := body.Data.Items[0]
+	wantTS := time.Date(2026, 7, 24, 9, 31, 0, 0, loc).UnixMilli()
+	if item.Timestamp != wantTS || item.Price != 8.5 || item.Volume == nil || *item.Volume != 100 {
+		t.Fatalf("item = %#v, want 09:31 price 8.5 volume 100", item)
+	}
+}
+
+// 验证扩展行情分时输出点与昨收。
+func TestV1TimeShareEx(t *testing.T) {
+	originalTick := v1FetchExHistoryTick
+	originalK := fetchExKLinePage
+	t.Cleanup(func() {
+		v1FetchExHistoryTick = originalTick
+		fetchExKLinePage = originalK
+	})
+	loc := time.FixedZone("CST", 8*60*60)
+	v1FetchExHistoryTick = func(date uint32, category uint8, code string) ([]proto.ExTickChartData, error) {
+		return []proto.ExTickChartData{{Time: "09:31", Price: 10.5, Avg: 10.5, Vol: 100}}, nil
+	}
+	fetchExKLinePage = func(category uint8, code string, period uint16, start uint32, count uint16, times uint16) ([]proto.ExKLineItem, error) {
+		return []proto.ExKLineItem{{DateTime: time.Date(2026, 7, 24, 15, 0, 0, 0, loc), PreClose: 10.4}}, nil
+	}
+
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/timeshare",
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:ex:31:HSI","symbol":"HSI","exchange":"HK","providerRef":{"category":31,"kind":"ex"}},"tradingDate":"2026-07-24"}`)
+
+	var body struct {
+		Data struct {
+			PreClose float64 `json:"preClose"`
+			Timezone string  `json:"timezone"`
+			Items    []struct {
+				Timestamp int64   `json:"timestamp"`
+				Price     float64 `json:"price"`
+				Average   float64 `json:"average"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, resp.Body.String())
+	}
+	if body.Data.PreClose != 10.4 || body.Data.Timezone != "Asia/Hong_Kong" || len(body.Data.Items) != 1 || body.Data.Items[0].Price != 10.5 {
+		t.Fatalf("series = %#v", body.Data)
+	}
+}
+
+// 验证扩展行情分时无数据时返回 INSTRUMENT_NOT_FOUND。
+func TestV1TimeShareExNoData(t *testing.T) {
+	originalTick := v1FetchExHistoryTick
+	t.Cleanup(func() { v1FetchExHistoryTick = originalTick })
+	v1FetchExHistoryTick = func(uint32, uint8, string) ([]proto.ExTickChartData, error) {
+		return []proto.ExTickChartData{{Time: "09:31", Price: 0, Avg: 0, Vol: 0}}, nil
+	}
+
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/timeshare",
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:ex:31:HSI","symbol":"HSI","exchange":"HK","providerRef":{"category":31,"kind":"ex"}},"tradingDate":"2026-07-24"}`)
+
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"INSTRUMENT_NOT_FOUND"`)) {
+		t.Fatalf("response = %s, want INSTRUMENT_NOT_FOUND", resp.Body.String())
+	}
+}

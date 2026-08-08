@@ -143,6 +143,26 @@ func TestIndexKLineRangeUsesFallbackCountThenPartial(t *testing.T) {
 	}
 }
 
+// 验证恶意/异常 fetch 持续返回新页时 paginateFromRecent 会被页数硬上限截断，不会无限追加内存。
+func TestPaginateFromRecentSafetyCap(t *testing.T) {
+	pages := 0
+	startDate := time.Date(2020, 1, 1, 0, 0, 0, 0, time.Local)
+	got, err := paginateFromRecent(798, func(start uint32, count uint16) ([]proto.SecurityBar, error) {
+		pages++
+		// 永远返回比 startDate 新的数据，正常终止条件永不满足
+		return []proto.SecurityBar{dayBar(2024, 1, 1)}, nil
+	}, securityBarOldest, startDate, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pages != maxKLinePages {
+		t.Fatalf("pages = %d, want capped at %d", pages, maxKLinePages)
+	}
+	if len(got) != maxKLinePages {
+		t.Fatalf("bars = %d, want %d (not unbounded growth)", len(got), maxKLinePages)
+	}
+}
+
 // 验证扩展行情短页K线按实际条数继续分页。
 func TestExKLineRangeAdvancesByActualShortPage(t *testing.T) {
 	prev := fetchExKLinePage
