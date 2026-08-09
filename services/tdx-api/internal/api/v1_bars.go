@@ -3,6 +3,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -62,15 +63,22 @@ func handleV1Bars(c *gin.Context) {
 		writeV1Error(c, http.StatusBadRequest, v1CodeInvalidRequest, err.Error())
 		return
 	}
+	ref := req.Instrument.ProviderRef
+	kind := v1ProviderRefKind(ref)
 	category, ok := v1PeriodToCategory[req.Period]
 	if !ok {
-		category = 4
+		writeV1Error(c, http.StatusBadRequest, v1CodeUnsupportedCapability,
+			fmt.Sprintf("period %q is not supported for kind %q", req.Period, kind))
+		return
+	}
+	if !v1AdjustmentSupported(kind, req.Adjustment) {
+		writeV1Error(c, http.StatusBadRequest, v1CodeUnsupportedCapability,
+			fmt.Sprintf("adjustment %q is not supported for kind %q", req.Adjustment, kind))
+		return
 	}
 	adjust := v1AdjustToUint[req.Adjustment]
 
 	items := make([]v1KLineItem, 0)
-	ref := req.Instrument.ProviderRef
-	kind := v1ProviderRefKind(ref)
 	switch kind {
 	case symbolKindIndex:
 		market, ok := v1ProviderRefNumber(ref, "market")

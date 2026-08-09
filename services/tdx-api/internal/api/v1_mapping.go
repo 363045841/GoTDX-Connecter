@@ -43,6 +43,63 @@ type v1InstrumentCapabilities struct {
 	Depth     *bool            `json:"depth,omitempty"`
 }
 
+// v1HistoryCoverage V1 数据源历史数据粗粒度覆盖区间，UTC Unix 毫秒。
+type v1HistoryCoverage struct {
+	From int64 `json:"from,omitempty"`
+	To   int64 `json:"to,omitempty"`
+}
+
+// v1SourceCapabilities V1 源级能力声明，前端流转层据此筛选候选源。
+type v1SourceCapabilities struct {
+	AssetClasses    []string            `json:"assetClasses"`
+	Bars            *v1BarCapability    `json:"bars,omitempty"`
+	TimeShare       *bool               `json:"timeShare,omitempty"`
+	Depth           *bool               `json:"depth,omitempty"`
+	HistoryCoverage *v1HistoryCoverage  `json:"historyCoverage,omitempty"`
+}
+
+// v1SourceCapabilitiesFor 构建 gotdx 源级能力声明。
+// 资产类别覆盖主市场 A 股/指数与扩展行情全部可路由类别；历史覆盖无固定下限，故不声明。
+func v1SourceCapabilitiesFor() v1SourceCapabilities {
+	timeShare, depth := true, false
+	return v1SourceCapabilities{
+		AssetClasses: []string{"stock", "index", "fund", "future", "option", "forex"},
+		Bars: &v1BarCapability{
+			Periods:     append([]string(nil), v1KLinePeriods...),
+			Adjustments: []string{"qfq", "hfq", "none"},
+		},
+		TimeShare: &timeShare,
+		Depth:     &depth,
+	}
+}
+
+// v1InstrumentCapabilitiesFor 返回指定 kind 品种实际支持的能力。
+// kind=stock 经 StockKLine 支持复权；index/ex 均无复权参数，仅支持 none。
+func v1InstrumentCapabilitiesFor(kind string) v1InstrumentCapabilities {
+	adjustments := []string{"none"}
+	if kind == symbolKindStock {
+		adjustments = []string{"qfq", "hfq", "none"}
+	}
+	timeShare := true
+	return v1InstrumentCapabilities{
+		Bars: &v1BarCapability{
+			Periods:     append([]string(nil), v1KLinePeriods...),
+			Adjustments: adjustments,
+		},
+		TimeShare: &timeShare,
+	}
+}
+
+// v1AdjustmentSupported 判断复权方式是否属于该 kind 的能力声明范围。
+func v1AdjustmentSupported(kind, adjustment string) bool {
+	for _, a := range v1InstrumentCapabilitiesFor(kind).Bars.Adjustments {
+		if a == adjustment {
+			return true
+		}
+	}
+	return false
+}
+
 // v1InstrumentDescriptor V1 品种描述，与前端 V1InstrumentDescriptor 对齐。
 type v1InstrumentDescriptor struct {
 	ID           string                   `json:"id"`
@@ -171,26 +228,18 @@ func toV1Instrument(item symbolSearchItem) v1InstrumentDescriptor {
 		}
 	}
 	assetClass := v1AssetClass(item.Exchange, kind)
-	adjustments := []string{"none"}
-	if assetClass == "stock" && kind != symbolKindEx {
-		adjustments = []string{"qfq", "hfq", "none"}
-	}
-	timeShare := true
-	periods := append([]string(nil), v1KLinePeriods...)
+	caps := v1InstrumentCapabilitiesFor(kind)
 	return v1InstrumentDescriptor{
-		ID:          v1InstrumentID(kind, key, item.Symbol),
-		SourceID:    v1SourceID,
-		Symbol:      item.Symbol,
-		Name:        item.Description,
-		AssetClass:  assetClass,
-		Exchange:    item.Exchange,
-		SessionID:   v1ExchangeToSession(item.Exchange),
-		Currency:    v1ExchangeToCurrency(item.Exchange),
-		ProviderRef: item.Params,
-		Capabilities: v1InstrumentCapabilities{
-			Bars:      &v1BarCapability{Periods: periods, Adjustments: adjustments},
-			TimeShare: &timeShare,
-		},
+		ID:           v1InstrumentID(kind, key, item.Symbol),
+		SourceID:     v1SourceID,
+		Symbol:       item.Symbol,
+		Name:         item.Description,
+		AssetClass:   assetClass,
+		Exchange:     item.Exchange,
+		SessionID:    v1ExchangeToSession(item.Exchange),
+		Currency:     v1ExchangeToCurrency(item.Exchange),
+		ProviderRef:  item.Params,
+		Capabilities: caps,
 	}
 }
 

@@ -44,10 +44,11 @@ type v1ErrorEnvelope struct {
 
 // v1SourceProbe 数据源探测结果，与前端 V1SourceProbe 对齐。
 type v1SourceProbe struct {
-	Status    string `json:"status"`
-	CheckedAt int64  `json:"checkedAt"`
-	LatencyMs int64  `json:"latencyMs,omitempty"`
-	Message   string `json:"message,omitempty"`
+	Status       string                  `json:"status"`
+	CheckedAt    int64                   `json:"checkedAt"`
+	LatencyMs    int64                   `json:"latencyMs,omitempty"`
+	Message      string                  `json:"message,omitempty"`
+	Capabilities *v1SourceCapabilities   `json:"capabilities,omitempty"`
 }
 
 // v1InstrumentSearchRequest 品种目录搜索请求。
@@ -107,9 +108,11 @@ func handleV1ProbeWithDeps(status func() client.Status, heartbeat v1HeartbeatPro
 		err := heartbeat()
 		checkedAt := time.Now().UnixMilli()
 		latency := time.Since(startedAt).Milliseconds()
+		caps := v1SourceCapabilitiesFor()
 		if err != nil {
 			writeV1Data(c, http.StatusOK, v1SourceProbe{
 				Status: "offline", CheckedAt: checkedAt, LatencyMs: latency, Message: err.Error(),
+				Capabilities: &caps,
 			})
 			return
 		}
@@ -120,6 +123,7 @@ func handleV1ProbeWithDeps(status func() client.Status, heartbeat v1HeartbeatPro
 		}
 		writeV1Data(c, http.StatusOK, v1SourceProbe{
 			Status: resultStatus, CheckedAt: checkedAt, LatencyMs: latency,
+			Capabilities: &caps,
 		})
 	}
 }

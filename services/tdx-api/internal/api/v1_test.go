@@ -30,7 +30,7 @@ func v1Request(router http.Handler, method, path, body string) *httptest.Respons
 	return resp
 }
 
-// 验证探测心跳成功且全域就绪时返回在线。
+// 验证探测心跳成功且全域就绪时返回在线，并携带源级能力声明。
 func TestV1ProbeOnline(t *testing.T) {
 	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
 	router.GET("/api/v1/market-data/sources/gotdx/probe", handleV1ProbeWithDeps(
@@ -41,9 +41,18 @@ func TestV1ProbeOnline(t *testing.T) {
 
 	var body struct {
 		Data struct {
-			Status    string `json:"status"`
-			CheckedAt int64  `json:"checkedAt"`
-			LatencyMs int64  `json:"latencyMs"`
+			Status       string `json:"status"`
+			CheckedAt    int64  `json:"checkedAt"`
+			LatencyMs    int64  `json:"latencyMs"`
+			Capabilities struct {
+				AssetClasses []string `json:"assetClasses"`
+				Bars         struct {
+					Periods     []string `json:"periods"`
+					Adjustments []string `json:"adjustments"`
+				} `json:"bars"`
+				TimeShare bool `json:"timeShare"`
+				Depth     bool `json:"depth"`
+			} `json:"capabilities"`
 		} `json:"data"`
 		RequestID string `json:"requestId"`
 	}
@@ -52,6 +61,13 @@ func TestV1ProbeOnline(t *testing.T) {
 	}
 	if body.Data.Status != "online" || body.RequestID == "" {
 		t.Fatalf("probe = %#v, want online with requestId", body)
+	}
+	caps := body.Data.Capabilities
+	if len(caps.AssetClasses) != 6 || len(caps.Bars.Periods) != 10 {
+		t.Fatalf("capabilities = %#v, want 6 assetClasses and 10 periods", caps)
+	}
+	if !caps.TimeShare || caps.Depth {
+		t.Fatalf("capabilities = %#v, want timeShare true depth false", caps)
 	}
 }
 
@@ -273,6 +289,28 @@ func TestV1BarsRejectsMissingMarket(t *testing.T) {
 
 	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"INVALID_REQUEST"`)) {
 		t.Fatalf("response = %s, want INVALID_REQUEST", resp.Body.String())
+	}
+}
+
+// 验证请求未声明周期的周期时返回 UNSUPPORTED_CAPABILITY，而非静默回退到日线。
+func TestV1BarsRejectsUnknownPeriod(t *testing.T) {
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"period":"2min","adjustment":"none","from":1,"to":2}`)
+
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"UNSUPPORTED_CAPABILITY"`)) {
+		t.Fatalf("response = %s, want UNSUPPORTED_CAPABILITY", resp.Body.String())
+	}
+}
+
+// 验证扩展行情请求不支持的复权方式时返回 UNSUPPORTED_CAPABILITY。
+func TestV1BarsRejectsUnsupportedAdjustment(t *testing.T) {
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:ex:31:HSI","symbol":"HSI","exchange":"HK","providerRef":{"category":31,"kind":"ex"}},"period":"daily","adjustment":"qfq","from":1,"to":2}`)
+
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"UNSUPPORTED_CAPABILITY"`)) {
+		t.Fatalf("response = %s, want UNSUPPORTED_CAPABILITY", resp.Body.String())
 	}
 }
 
