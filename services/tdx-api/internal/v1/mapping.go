@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"KlineChartQuantGo/services/tdx-api/internal/directory"
 	"KlineChartQuantGo/services/tdx-api/internal/domain"
@@ -61,9 +62,12 @@ type v1SourceCapabilities struct {
 }
 
 // v1SourceCapabilitiesFor 构建 gotdx 源级能力声明。
-// 资产类别覆盖主市场 A 股/指数与扩展行情全部可路由类别；历史覆盖无固定下限，故不声明。
+// 资产类别覆盖主市场 A 股/指数与扩展行情全部可路由类别。
+// 历史覆盖只声明上界（数据可到当下）：分时/分钟线历史明显浅于日线，无单一诚实的下界可声明，
+// 更早区间的真实可用性交由 INSTRUMENT_NOT_FOUND 确定性错误在流转时判定。
 func v1SourceCapabilitiesFor() v1SourceCapabilities {
 	timeShare, depth := true, false
+	now := time.Now().UnixMilli()
 	return v1SourceCapabilities{
 		AssetClasses: []string{"stock", "index", "fund", "future", "option", "forex"},
 		Bars: &v1BarCapability{
@@ -72,6 +76,9 @@ func v1SourceCapabilitiesFor() v1SourceCapabilities {
 		},
 		TimeShare: &timeShare,
 		Depth:     &depth,
+		HistoryCoverage: &v1HistoryCoverage{
+			To: now,
+		},
 	}
 }
 

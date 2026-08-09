@@ -2,6 +2,7 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -235,5 +236,35 @@ func TestStockKLineRangeUsesPaginate(t *testing.T) {
 	}
 	if len(got) != 4 {
 		t.Fatalf("bars = %d, want 4", len(got))
+	}
+}
+
+// 验证无数据品种（如已到期期货）返回确定性错误而非空序列，供 V1 层映射为可流转错误码。
+func TestStockKLineRangeReturnsErrNoKLineData(t *testing.T) {
+	prev := FetchStockKLinePage
+	t.Cleanup(func() { FetchStockKLinePage = prev })
+	FetchStockKLinePage = func(uint16, uint8, string, uint16, uint16, uint16, uint16) ([]proto.SecurityBar, error) {
+		return nil, nil
+	}
+
+	startDate := time.Date(2026, 7, 1, 0, 0, 0, 0, time.Local)
+	endDate := time.Date(2026, 7, 31, 0, 0, 0, 0, time.Local)
+	if _, err := StockKLineRange(4, 1, "999999", 1, 0, startDate, endDate); !errors.Is(err, ErrNoKLineData) {
+		t.Fatalf("err = %v, want ErrNoKLineData", err)
+	}
+}
+
+// 验证扩展行情无数据品种返回 ErrNoKLineData，即已到期期货场景。
+func TestExKLineRangeReturnsErrNoKLineData(t *testing.T) {
+	prev := FetchExKLinePage
+	t.Cleanup(func() { FetchExKLinePage = prev })
+	FetchExKLinePage = func(uint8, string, uint16, uint32, uint16, uint16) ([]proto.ExKLineItem, error) {
+		return nil, nil
+	}
+
+	startDate := time.Date(2026, 7, 1, 0, 0, 0, 0, time.Local)
+	endDate := time.Date(2026, 7, 31, 0, 0, 0, 0, time.Local)
+	if _, err := ExKLineRange(31, "IF2507", 4, 1, startDate, endDate); !errors.Is(err, ErrNoKLineData) {
+		t.Fatalf("err = %v, want ErrNoKLineData", err)
 	}
 }

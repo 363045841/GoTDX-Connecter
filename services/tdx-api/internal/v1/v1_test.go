@@ -90,6 +90,20 @@ func TestV1ProbeOnline(t *testing.T) {
 	}
 }
 
+// 验证探测声明历史覆盖上界（historyCoverage.to），供前端流转筛选候选源。
+func TestV1ProbeDeclaresHistoryCoverage(t *testing.T) {
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	router.GET("/api/v1/market-data/sources/gotdx/probe", handleV1ProbeWithDeps(
+		func() client.Status { return client.Status{Ready: true} },
+		func() error { return nil },
+	))
+	resp := v1Request(router, http.MethodGet, "/api/v1/market-data/sources/gotdx/probe", "")
+
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"historyCoverage"`)) {
+		t.Fatalf("response = %s, want historyCoverage", resp.Body.String())
+	}
+}
+
 // 验证心跳成功但全域未就绪时返回降级。
 func TestV1ProbeDegraded(t *testing.T) {
 	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: false} })
@@ -318,6 +332,26 @@ func TestV1BarsRejectsUnknownPeriod(t *testing.T) {
 
 	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"UNSUPPORTED_CAPABILITY"`)) {
 		t.Fatalf("response = %s, want UNSUPPORTED_CAPABILITY", resp.Body.String())
+	}
+}
+
+// 验证无数据品种（如已到期期货）返回 INSTRUMENT_NOT_FOUND，触发前端请求流转。
+func TestV1BarsNoDataReturnsInstrumentNotFound(t *testing.T) {
+	original := domain.FetchStockKLinePage
+	t.Cleanup(func() { domain.FetchStockKLinePage = original })
+	domain.FetchStockKLinePage = func(uint16, uint8, string, uint16, uint16, uint16, uint16) ([]proto.SecurityBar, error) {
+		return nil, nil
+	}
+
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"period":"daily","adjustment":"none","from":1,"to":2}`)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", resp.Code, resp.Body.String())
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"INSTRUMENT_NOT_FOUND"`)) {
+		t.Fatalf("response = %s, want INSTRUMENT_NOT_FOUND", resp.Body.String())
 	}
 }
 

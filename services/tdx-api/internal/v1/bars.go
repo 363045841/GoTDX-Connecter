@@ -11,6 +11,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// writeV1BarsError 统一映射 K 线查询错误：无数据返回确定性可流转码，上游故障返回网关错误。
+func writeV1BarsError(c *gin.Context, err error) {
+	if errors.Is(err, domain.ErrNoKLineData) {
+		writeV1Error(c, http.StatusNotFound, v1CodeInstrumentNotFound, err.Error())
+		return
+	}
+	writeV1Error(c, http.StatusBadGateway, v1CodeUpstreamUnavailable, err.Error())
+}
+
 // v1BarRequest V1 K 线请求；from/to 为 UTC Unix 毫秒时间戳，含边界。
 type v1BarRequest struct {
 	SourceID   string                `json:"sourceId"`
@@ -89,7 +98,7 @@ func handleV1Bars(c *gin.Context) {
 		}
 		bars, err := domain.IndexKLineRange(category, uint8(market), req.Instrument.Symbol, startDate, endDate)
 		if err != nil {
-			writeV1Error(c, http.StatusBadGateway, v1CodeUpstreamUnavailable, err.Error())
+			writeV1BarsError(c, err)
 			return
 		}
 		for _, bar := range bars {
@@ -103,7 +112,7 @@ func handleV1Bars(c *gin.Context) {
 		}
 		bars, err := domain.ExKLineRange(uint8(cat), req.Instrument.Symbol, category, 1, startDate, endDate)
 		if err != nil {
-			writeV1Error(c, http.StatusBadGateway, v1CodeUpstreamUnavailable, err.Error())
+			writeV1BarsError(c, err)
 			return
 		}
 		for _, bar := range bars {
@@ -117,7 +126,7 @@ func handleV1Bars(c *gin.Context) {
 		}
 		bars, err := domain.StockKLineRange(category, uint8(market), req.Instrument.Symbol, 1, adjust, startDate, endDate)
 		if err != nil {
-			writeV1Error(c, http.StatusBadGateway, v1CodeUpstreamUnavailable, err.Error())
+			writeV1BarsError(c, err)
 			return
 		}
 		for _, bar := range bars {

@@ -84,6 +84,12 @@ func writeV1Error(c *gin.Context, status int, code, message string) {
 	})
 }
 
+// WriteInternalError 输出 V1 INTERNAL 错误 envelope，供恢复中间件对 V1 路径统一响应。
+func WriteInternalError(c *gin.Context) {
+	writeV1Error(c, http.StatusInternalServerError, v1CodeInternal, "internal server error")
+	c.Abort()
+}
+
 // RegisterRoutes 注册 V1 行情协议路由。
 func RegisterRoutes(r *gin.Engine, symbolCache *directory.Cache, status func() client.Status) {
 	v1 := r.Group("/api/v1/market-data")

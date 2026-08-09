@@ -2,12 +2,17 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"KlineChartQuantGo/services/tdx-api/internal/client"
 	"github.com/bensema/gotdx/proto"
 )
+
+// ErrNoKLineData 数据源对该品种完全无 K 线数据（如已到期期货），与"指定区间内无数据"区分。
+// 上层据此返回可流转的确定性错误，触发前端请求流转。
+var ErrNoKLineData = errors.New("no kline data for instrument")
 
 func tryStockKLine(category uint16, market uint8, code string, start uint16, count uint16, times uint16, adjust uint16) (klines []proto.SecurityBar, err error) {
 	defer func() {
@@ -131,6 +136,9 @@ func StockKLineRange(category uint16, market uint8, code string, times uint16, a
 	if err != nil {
 		return nil, err
 	}
+	if len(raw) == 0 {
+		return nil, ErrNoKLineData
+	}
 	return filterKLineByDate(raw, startDate, endDate, true), nil
 }
 
@@ -151,6 +159,9 @@ func IndexKLineRange(category uint16, market uint8, code string, startDate, endD
 	if err != nil {
 		return nil, err
 	}
+	if len(raw) == 0 {
+		return nil, ErrNoKLineData
+	}
 	return filterKLineByDate(raw, startDate, endDate, true), nil
 }
 
@@ -161,6 +172,9 @@ func ExKLineRange(category uint8, code string, period uint16, times uint16, star
 	}, exKLineOldest, startDate, false)
 	if err != nil {
 		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, ErrNoKLineData
 	}
 	return filterExKLineByDate(raw, startDate, endDate), nil
 }
