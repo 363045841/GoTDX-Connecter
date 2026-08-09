@@ -128,8 +128,11 @@ go build -o binance-api.exe ./services/binance-api
     ├── tdx-api/                 # 通达信行情代理
     │   ├── main.go
     │   └── internal/
-    │       ├── client/          # gotdx 客户端单例
-    │       └── api/             # 路由 + handlers
+    │       ├── client/          # gotdx 客户端单例（连接/重连/心跳/状态）
+    │       ├── directory/       # 证券目录：加载/缓存/SQLite 持久化/搜索
+    │       ├── domain/          # 领域层：K 线分页、分时构建、昨收解析（api/v1 共用）
+    │       ├── api/             # 旧 HTTP 接口 + 路由装配
+    │       └── v1/              # V1 行情协议：envelope、探测、搜索、bars/timeshare
     └── binance-api/             # 币安深度代理
         ├── main.go
         └── internal/

@@ -1,5 +1,5 @@
 // 本文件测试股票、指数和扩展行情K线的分页及日期范围处理逻辑。
-package api
+package domain
 
 import (
 	"fmt"
@@ -104,14 +104,14 @@ func TestPaginateFromRecentToleratesPartialError(t *testing.T) {
 
 // 验证指数深页请求失败时缩小页大小并返回部分数据。
 func TestIndexKLineRangeUsesFallbackCountThenPartial(t *testing.T) {
-	prev := fetchIndexBarsPage
-	t.Cleanup(func() { fetchIndexBarsPage = prev })
+	prev := FetchIndexBarsPage
+	t.Cleanup(func() { FetchIndexBarsPage = prev })
 
 	type call struct {
 		start, count uint16
 	}
 	var calls []call
-	fetchIndexBarsPage = func(category uint16, market uint8, code string, start, count uint16) ([]proto.SecurityBar, error) {
+	FetchIndexBarsPage = func(category uint16, market uint8, code string, start, count uint16) ([]proto.SecurityBar, error) {
 		calls = append(calls, call{start, count})
 		if start == 0 && count == indexPageSize {
 			return []proto.SecurityBar{dayBar(2024, 1, 1), dayBar(2024, 1, 2)}, nil
@@ -165,11 +165,11 @@ func TestPaginateFromRecentSafetyCap(t *testing.T) {
 
 // 验证扩展行情短页K线按实际条数继续分页。
 func TestExKLineRangeAdvancesByActualShortPage(t *testing.T) {
-	prev := fetchExKLinePage
-	t.Cleanup(func() { fetchExKLinePage = prev })
+	prev := FetchExKLinePage
+	t.Cleanup(func() { FetchExKLinePage = prev })
 
 	var starts []uint32
-	fetchExKLinePage = func(category uint8, code string, period uint16, start uint32, count uint16, times uint16) ([]proto.ExKLineItem, error) {
+	FetchExKLinePage = func(category uint8, code string, period uint16, start uint32, count uint16, times uint16) ([]proto.ExKLineItem, error) {
 		starts = append(starts, start)
 		_ = category
 		_ = code
@@ -209,11 +209,11 @@ func TestExKLineRangeAdvancesByActualShortPage(t *testing.T) {
 
 // 验证股票日K查询使用通用分页逻辑。
 func TestStockKLineRangeUsesPaginate(t *testing.T) {
-	prev := fetchStockKLinePage
-	t.Cleanup(func() { fetchStockKLinePage = prev })
+	prev := FetchStockKLinePage
+	t.Cleanup(func() { FetchStockKLinePage = prev })
 
 	var starts []uint16
-	fetchStockKLinePage = func(category uint16, market uint8, code string, start, count uint16, times, adjust uint16) ([]proto.SecurityBar, error) {
+	FetchStockKLinePage = func(category uint16, market uint8, code string, start, count uint16, times, adjust uint16) ([]proto.SecurityBar, error) {
 		starts = append(starts, start)
 		if start == 0 {
 			return []proto.SecurityBar{dayBar(2024, 1, 10), dayBar(2024, 1, 11)}, nil

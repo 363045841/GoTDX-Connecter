@@ -1,5 +1,5 @@
 // 本文件测试SQLite证券目录快照的读写、一致性和日志配置。
-package api
+package directory
 
 import (
 	"fmt"
@@ -13,7 +13,7 @@ import (
 // 验证SQLite符号目录存储持久化并替换快照。
 func TestSQLiteSymbolDirectoryStorePersistsAndReplacesSnapshot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "symbols.db")
-	store, err := newSQLiteSymbolDirectoryStore(path)
+	store, err := NewSQLiteStore(path)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -22,8 +22,8 @@ func TestSQLiteSymbolDirectoryStorePersistsAndReplacesSnapshot(t *testing.T) {
 		t.Fatalf("empty Load() = found:%v err:%v", found, err)
 	}
 
-	first := symbolDirectorySnapshot{
-		Entries: []symbolSearchItem{{
+	first := Snapshot{
+		Entries: []Item{{
 			Symbol: "000001", Description: "Ping An", Exchange: "SZ", Source: "gotdx",
 			Params: map[string]any{"market": uint8(0), "kind": "stock"},
 		}},
@@ -36,7 +36,7 @@ func TestSQLiteSymbolDirectoryStorePersistsAndReplacesSnapshot(t *testing.T) {
 		t.Fatalf("close store: %v", err)
 	}
 
-	store, err = newSQLiteSymbolDirectoryStore(path)
+	store, err = NewSQLiteStore(path)
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
@@ -46,8 +46,8 @@ func TestSQLiteSymbolDirectoryStorePersistsAndReplacesSnapshot(t *testing.T) {
 		t.Fatalf("Load() = %#v, found:%v err:%v, want %#v", got, found, err, first)
 	}
 
-	second := symbolDirectorySnapshot{
-		Entries: []symbolSearchItem{{
+	second := Snapshot{
+		Entries: []Item{{
 			Symbol: "00700", Description: "Tencent", Exchange: "HK", Source: "gotdx",
 			Params: map[string]any{"category": uint8(7), "kind": "ex"},
 		}},
@@ -64,14 +64,14 @@ func TestSQLiteSymbolDirectoryStorePersistsAndReplacesSnapshot(t *testing.T) {
 
 // 验证SQLite快照替换失败时保留原有快照。
 func TestSQLiteSymbolDirectoryStorePreservesSnapshotWhenReplacementFails(t *testing.T) {
-	store, err := newSQLiteSymbolDirectoryStore(filepath.Join(t.TempDir(), "symbols.db"))
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "symbols.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	first := symbolDirectorySnapshot{
-		Entries: []symbolSearchItem{{
+	first := Snapshot{
+		Entries: []Item{{
 			Symbol: "000001", Description: "Ping An", Exchange: "SZ", Source: "gotdx",
 			Params: map[string]any{"market": uint8(0), "kind": "stock"},
 		}},
@@ -89,8 +89,8 @@ func TestSQLiteSymbolDirectoryStorePreservesSnapshotWhenReplacementFails(t *test
 		t.Fatalf("create failure trigger: %v", err)
 	}
 
-	failed := symbolDirectorySnapshot{
-		Entries: []symbolSearchItem{{
+	failed := Snapshot{
+		Entries: []Item{{
 			Symbol: "FAIL", Description: "Failure", Exchange: "SZ", Source: "gotdx",
 			Params: map[string]any{"market": uint8(0), "kind": "stock"},
 		}},
@@ -108,12 +108,12 @@ func TestSQLiteSymbolDirectoryStorePreservesSnapshotWhenReplacementFails(t *test
 // 验证SQLite符号目录存储串行化并发写入。
 func TestSQLiteSymbolDirectoryStoreWaitsForConcurrentWriter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "symbols.db")
-	firstStore, err := newSQLiteSymbolDirectoryStore(path)
+	firstStore, err := NewSQLiteStore(path)
 	if err != nil {
 		t.Fatalf("open first store: %v", err)
 	}
 	t.Cleanup(func() { _ = firstStore.Close() })
-	secondStore, err := newSQLiteSymbolDirectoryStore(path)
+	secondStore, err := NewSQLiteStore(path)
 	if err != nil {
 		t.Fatalf("open second store: %v", err)
 	}
@@ -130,8 +130,8 @@ func TestSQLiteSymbolDirectoryStoreWaitsForConcurrentWriter(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- secondStore.Replace(symbolDirectorySnapshot{
-			Entries: []symbolSearchItem{{
+		done <- secondStore.Replace(Snapshot{
+			Entries: []Item{{
 				Symbol: "000001", Description: "Ping An", Exchange: "SZ", Source: "gotdx",
 				Params: map[string]any{"market": uint8(0), "kind": "stock"},
 			}},
@@ -155,27 +155,27 @@ func TestSQLiteSymbolDirectoryStoreWaitsForConcurrentWriter(t *testing.T) {
 // 验证SQLite快照替换期间读取结果保持一致。
 func TestSQLiteSymbolDirectoryStoreLoadsConsistentSnapshotDuringReplacement(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "symbols.db")
-	reader, err := newSQLiteSymbolDirectoryStore(path)
+	reader, err := NewSQLiteStore(path)
 	if err != nil {
 		t.Fatalf("open reader: %v", err)
 	}
 	t.Cleanup(func() { _ = reader.Close() })
-	writer, err := newSQLiteSymbolDirectoryStore(path)
+	writer, err := NewSQLiteStore(path)
 	if err != nil {
 		t.Fatalf("open writer: %v", err)
 	}
 	t.Cleanup(func() { _ = writer.Close() })
 
-	snapshots := []symbolDirectorySnapshot{
+	snapshots := []Snapshot{
 		{
-			Entries: []symbolSearchItem{{
+			Entries: []Item{{
 				Symbol: "A", Description: "Version A", Exchange: "SZ", Source: "gotdx",
 				Params: map[string]any{"market": uint8(0), "kind": "stock"},
 			}},
 			LoadedAt: time.Unix(1, 0).UTC(),
 		},
 		{
-			Entries: []symbolSearchItem{{
+			Entries: []Item{{
 				Symbol: "B", Description: "Version B", Exchange: "SH", Source: "gotdx",
 				Params: map[string]any{"market": uint8(1), "kind": "index"},
 			}},
@@ -231,7 +231,7 @@ func TestSQLiteSymbolDirectoryStoreLoadsConsistentSnapshotDuringReplacement(t *t
 
 // 验证SQLite符号目录存储启用WAL日志模式。
 func TestSQLiteSymbolDirectoryStoreUsesWAL(t *testing.T) {
-	store, err := newSQLiteSymbolDirectoryStore(filepath.Join(t.TempDir(), "symbols.db"))
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "symbols.db"))
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}

@@ -1,4 +1,5 @@
-package api
+// 证券目录缓存与搜索：从 gotdx 主站/扩展行情加载目录，缓存并持久化，按关键字搜索。
+package directory
 
 import (
 	"fmt"
@@ -11,90 +12,75 @@ import (
 	"KlineChartQuantGo/services/tdx-api/internal/client"
 	"github.com/bensema/gotdx/proto"
 	"github.com/bensema/gotdx/types"
-	"github.com/gin-gonic/gin"
-)
-
-// 搜索结果 params.kind：与 gotdx types 品种分类对齐，供 K 线路由使用
-const (
-	symbolKindStock = "stock"
-	symbolKindIndex = "index"
-	symbolKindEx    = "ex"
 )
 
 const (
-	symbolDirectoryTTL        = 24 * time.Hour
-	exDirectoryPageSize       = 1000
-	defaultSymbolSearchLimit  = 20
-	maxSymbolSearchLimit      = 100
-	symbolDirectoryRetryDelay = time.Minute
+	defaultTTL            = 24 * time.Hour
+	exDirectoryPageSize   = 1000
+	defaultSearchLimit    = 20
+	maxSearchLimit        = 100
+	directoryRetryDelay   = time.Minute
 )
 
-type symbolDirectoryLoader interface {
-	StockAll(market uint8) ([]proto.Security, error)
-	ExCount() (uint32, error)
-	ExList(start uint32, count uint16) ([]proto.ExListItem, error)
-}
+// GotdxLoader 通过 gotdx 客户端加载证券目录。
+type GotdxLoader struct{}
 
-type gotdxSymbolDirectoryLoader struct{}
-
-func (gotdxSymbolDirectoryLoader) StockAll(market uint8) ([]proto.Security, error) {
+func (GotdxLoader) StockAll(market uint8) ([]proto.Security, error) {
 	return mainCall(func(c client.MainQuerier) ([]proto.Security, error) { return c.StockAll(market) })
 }
 
-func (gotdxSymbolDirectoryLoader) ExCount() (uint32, error) {
+func (GotdxLoader) ExCount() (uint32, error) {
 	return exCall(func(c client.ExQuerier) (uint32, error) { return c.ExCount() })
 }
 
-func (gotdxSymbolDirectoryLoader) ExList(start uint32, count uint16) ([]proto.ExListItem, error) {
+func (GotdxLoader) ExList(start uint32, count uint16) ([]proto.ExListItem, error) {
 	return exCall(func(c client.ExQuerier) ([]proto.ExListItem, error) { return c.ExList(start, count) })
 }
 
-type symbolSearchItem struct {
-	Symbol      string `json:"symbol"`
-	Description string `json:"description"`
-	Exchange    string `json:"exchange"`
-	Source      string `json:"source"`
-	// Params 含 market|category 与 kind（stock|index|ex），前端原样带回拉 K 线
-	Params map[string]any `json:"params"`
-}
-
-type symbolDirectoryCache struct {
-	loader    symbolDirectoryLoader
-	store     symbolDirectoryStore
+// Cache 证券目录缓存：TTL 内复用内存目录，过期刷新，持久化失败不影响可用性。
+type Cache struct {
+	loader    Loader
+	store     Store
 	ttl       time.Duration
 	now       func() time.Time
 	mu        sync.Mutex
-	entries   []symbolSearchItem
+	entries   []Item
 	loadedAt  time.Time
 	retryAt   time.Time
 	loaded    bool
 	storeRead bool
 }
 
-func newSymbolDirectoryCache(loader symbolDirectoryLoader, store symbolDirectoryStore, ttl time.Duration) *symbolDirectoryCache {
-	return &symbolDirectoryCache{loader: loader, store: store, ttl: ttl, now: time.Now}
+// NewCache 创建证券目录缓存。
+func NewCache(loader Loader, store Store, ttl time.Duration) *Cache {
+	if ttl <= 0 {
+		ttl = defaultTTL
+	}
+	return &Cache{loader: loader, store: store, ttl: ttl, now: time.Now}
 }
 
-func (c *symbolDirectoryCache) warmUp() error {
+// WarmUp 启动时预热目录缓存。
+func (c *Cache) WarmUp() error {
 	log.Printf("symbol directory: warming up")
 	_, err := c.directory()
 	return err
 }
 
-func (c *symbolDirectoryCache) search(query string, limit int) ([]symbolSearchItem, error) {
+// Search 按关键字搜索证券目录，返回按匹配度排序的条目。
+func (c *Cache) Search(query string, limit int) ([]Item, error) {
 	entries, err := c.directory()
 	if err != nil {
 		return nil, err
 	}
 	needle := strings.ToLower(query)
-	matches := make([]symbolSearchItem, 0)
+	matches := make([]Item, 0)
 	for _, entry := range entries {
-		if symbolMatchRank(entry, needle) < 6 {
+		if matchRank(entry, needle) < 6 {
 			matches = append(matches, entry)
 		}
 	}
 	sort.SliceStable(matches, func(i, j int) bool {
-		return symbolMatchRank(matches[i], needle) < symbolMatchRank(matches[j], needle)
+		return matchRank(matches[i], needle) < matchRank(matches[j], needle)
 	})
 	if limit < len(matches) {
 		matches = matches[:limit]
@@ -102,7 +88,7 @@ func (c *symbolDirectoryCache) search(query string, limit int) ([]symbolSearchIt
 	return matches, nil
 }
 
-func (c *symbolDirectoryCache) directory() ([]symbolSearchItem, error) {
+func (c *Cache) directory() ([]Item, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.loadPersistedDirectory()
@@ -115,7 +101,7 @@ func (c *symbolDirectoryCache) directory() ([]symbolSearchItem, error) {
 	entries, err := c.loadDirectory()
 	if err != nil {
 		if c.loaded {
-			c.retryAt = now.Add(symbolDirectoryRetryDelay)
+			c.retryAt = now.Add(directoryRetryDelay)
 			log.Printf("symbol directory: gotdx fetch failed, using stale cache entries=%d age=%s err=%v",
 				len(c.entries), now.Sub(c.loadedAt).Round(time.Second), err)
 			return c.entries, nil
@@ -125,7 +111,7 @@ func (c *symbolDirectoryCache) directory() ([]symbolSearchItem, error) {
 	}
 	elapsed := time.Since(started).Round(time.Millisecond)
 	if c.store != nil {
-		if err := c.store.Replace(symbolDirectorySnapshot{Entries: entries, LoadedAt: now}); err != nil {
+		if err := c.store.Replace(Snapshot{Entries: entries, LoadedAt: now}); err != nil {
 			log.Printf("symbol directory database write failed: %v", err)
 		} else {
 			log.Printf("symbol directory: persisted %d entries to sqlite in %s", len(entries), elapsed)
@@ -139,7 +125,7 @@ func (c *symbolDirectoryCache) directory() ([]symbolSearchItem, error) {
 	return c.entries, nil
 }
 
-func (c *symbolDirectoryCache) loadPersistedDirectory() {
+func (c *Cache) loadPersistedDirectory() {
 	if c.storeRead || c.store == nil {
 		return
 	}
@@ -160,8 +146,8 @@ func (c *symbolDirectoryCache) loadPersistedDirectory() {
 	}
 }
 
-func (c *symbolDirectoryCache) loadDirectory() ([]symbolSearchItem, error) {
-	entries := make([]symbolSearchItem, 0)
+func (c *Cache) loadDirectory() ([]Item, error) {
+	entries := make([]Item, 0)
 	seen := make(map[string]struct{})
 	for _, market := range []uint8{0, 1, 2} {
 		stocks, err := c.loader.StockAll(market)
@@ -170,14 +156,14 @@ func (c *symbolDirectoryCache) loadDirectory() ([]symbolSearchItem, error) {
 		}
 		for _, stock := range stocks {
 			exchange := mainExchange(market)
-			item := symbolSearchItem{
+			item := Item{
 				Symbol: stock.Code, Description: stock.Name, Exchange: exchange, Source: "gotdx",
 				Params: map[string]any{
 					"market": market,
 					"kind":   mainMarketSymbolKind(stock.Code, exchange),
 				},
 			}
-			appendUniqueSymbol(&entries, seen, "market", market, item)
+			appendUnique(&entries, seen, "market", market, item)
 		}
 	}
 
@@ -195,20 +181,20 @@ func (c *symbolDirectoryCache) loadDirectory() ([]symbolSearchItem, error) {
 			return nil, err
 		}
 		for _, ex := range items {
-			item := symbolSearchItem{
+			item := Item{
 				Symbol: ex.Code, Description: ex.Name, Exchange: extendedExchange(ex.Market), Source: "gotdx",
 				Params: map[string]any{
 					"category": ex.Category,
-					"kind":     symbolKindEx,
+					"kind":     KindEx,
 				},
 			}
-			appendUniqueSymbol(&entries, seen, "category", ex.Category, item)
+			appendUnique(&entries, seen, "category", ex.Category, item)
 		}
 	}
 	return entries, nil
 }
 
-func appendUniqueSymbol(entries *[]symbolSearchItem, seen map[string]struct{}, kind string, market uint8, item symbolSearchItem) {
+func appendUnique(entries *[]Item, seen map[string]struct{}, kind string, market uint8, item Item) {
 	key := fmt.Sprintf("%s:%s:%d:%s", item.Source, kind, market, item.Symbol)
 	if _, exists := seen[key]; exists {
 		return
@@ -217,7 +203,7 @@ func appendUniqueSymbol(entries *[]symbolSearchItem, seen map[string]struct{}, k
 	*entries = append(*entries, item)
 }
 
-func symbolMatchRank(item symbolSearchItem, query string) int {
+func matchRank(item Item, query string) int {
 	code := strings.ToLower(item.Symbol)
 	name := strings.ToLower(item.Description)
 	switch {
@@ -255,9 +241,9 @@ func mainExchange(market uint8) string {
 func mainMarketSymbolKind(code, exchange string) string {
 	// IsIndex 要求 9 位形如 000001.SH
 	if types.IsIndex(fmt.Sprintf("%s.%s", code, strings.ToUpper(exchange))) {
-		return symbolKindIndex
+		return KindIndex
 	}
-	return symbolKindStock
+	return KindStock
 }
 
 func extendedExchange(market uint8) string {
@@ -268,35 +254,10 @@ func extendedExchange(market uint8) string {
 	return fmt.Sprintf("EX-%d", market)
 }
 
-type symbolSearchRequest struct {
-	Query string `json:"query"`
-	Limit *int   `json:"limit"`
+func mainCall[T any](operation func(client.MainQuerier) (T, error)) (T, error) {
+	return client.QueryMain(operation)
 }
 
-func newSymbolSearchHandler(cache *symbolDirectoryCache) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req symbolSearchRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": "invalid JSON: " + err.Error()})
-			return
-		}
-		query := strings.TrimSpace(req.Query)
-		if query == "" {
-			c.JSON(400, gin.H{"error": "query is required"})
-			return
-		}
-		limit := defaultSymbolSearchLimit
-		if req.Limit != nil && *req.Limit > 0 {
-			limit = *req.Limit
-		}
-		if limit > maxSymbolSearchLimit {
-			limit = maxSymbolSearchLimit
-		}
-		items, err := cache.search(query, limit)
-		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(200, items)
-	}
+func exCall[T any](operation func(client.ExQuerier) (T, error)) (T, error) {
+	return client.QueryEx(operation)
 }

@@ -1,22 +1,17 @@
-// 本文件测试证券目录缓存、持久化快照和搜索接口行为。
-package api
+// 本文件测试证券目录缓存、持久化快照和搜索行为。
+package directory
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/bensema/gotdx/proto"
-	"github.com/gin-gonic/gin"
 )
 
-type fakeSymbolDirectoryLoader struct {
+type fakeLoader struct {
 	stocks     map[uint8][]proto.Security
 	ex         []proto.ExListItem
 	err        error
@@ -24,8 +19,8 @@ type fakeSymbolDirectoryLoader struct {
 	exCalls    int
 }
 
-type fakeSymbolDirectoryStore struct {
-	snapshot     symbolDirectorySnapshot
+type fakeStore struct {
+	snapshot     Snapshot
 	found        bool
 	loadErr      error
 	replaceErr   error
@@ -34,13 +29,13 @@ type fakeSymbolDirectoryStore struct {
 }
 
 // Load 返回预设的证券目录快照读取结果。
-func (s *fakeSymbolDirectoryStore) Load() (symbolDirectorySnapshot, bool, error) {
+func (s *fakeStore) Load() (Snapshot, bool, error) {
 	s.loadCalls++
 	return s.snapshot, s.found, s.loadErr
 }
 
 // Replace 记录待写入快照并返回预设写入错误。
-func (s *fakeSymbolDirectoryStore) Replace(snapshot symbolDirectorySnapshot) error {
+func (s *fakeStore) Replace(snapshot Snapshot) error {
 	s.replaceCalls++
 	if s.replaceErr != nil {
 		return s.replaceErr
@@ -51,7 +46,7 @@ func (s *fakeSymbolDirectoryStore) Replace(snapshot symbolDirectorySnapshot) err
 }
 
 // StockAll 返回指定市场预设的股票目录数据。
-func (l *fakeSymbolDirectoryLoader) StockAll(market uint8) ([]proto.Security, error) {
+func (l *fakeLoader) StockAll(market uint8) ([]proto.Security, error) {
 	l.stockCalls++
 	if l.err != nil {
 		return nil, l.err
@@ -60,7 +55,7 @@ func (l *fakeSymbolDirectoryLoader) StockAll(market uint8) ([]proto.Security, er
 }
 
 // ExCount 返回预设的扩展行情目录总数。
-func (l *fakeSymbolDirectoryLoader) ExCount() (uint32, error) {
+func (l *fakeLoader) ExCount() (uint32, error) {
 	if l.err != nil {
 		return 0, l.err
 	}
@@ -68,7 +63,7 @@ func (l *fakeSymbolDirectoryLoader) ExCount() (uint32, error) {
 }
 
 // ExList 返回预设的扩展行情目录分页数据。
-func (l *fakeSymbolDirectoryLoader) ExList(start uint32, count uint16) ([]proto.ExListItem, error) {
+func (l *fakeLoader) ExList(start uint32, count uint16) ([]proto.ExListItem, error) {
 	l.exCalls++
 	if l.err != nil {
 		return nil, l.err
@@ -83,9 +78,9 @@ func (l *fakeSymbolDirectoryLoader) ExList(start uint32, count uint16) ([]proto.
 	return l.ex[start:end], nil
 }
 
-// newSearchTestCache 创建使用测试加载器和可控时间的证券目录缓存。
-func newSearchTestCache(loader *fakeSymbolDirectoryLoader, now *time.Time) *symbolDirectoryCache {
-	cache := newSymbolDirectoryCache(loader, nil, 30*time.Minute)
+// newTestCache 创建使用测试加载器和可控时间的证券目录缓存。
+func newTestCache(loader *fakeLoader, now *time.Time) *Cache {
+	cache := NewCache(loader, nil, 30*time.Minute)
 	cache.now = func() time.Time { return *now }
 	return cache
 }
@@ -93,18 +88,18 @@ func newSearchTestCache(loader *fakeSymbolDirectoryLoader, now *time.Time) *symb
 // 验证符号目录缓存优先使用新鲜的持久化快照。
 func TestSymbolDirectoryCacheUsesFreshPersistedSnapshot(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
-	loader := &fakeSymbolDirectoryLoader{err: errors.New("loader must not be called")}
-	store := &fakeSymbolDirectoryStore{snapshot: symbolDirectorySnapshot{
-		Entries: []symbolSearchItem{{
+	loader := &fakeLoader{err: errors.New("loader must not be called")}
+	store := &fakeStore{snapshot: Snapshot{
+		Entries: []Item{{
 			Symbol: "000001", Description: "Ping An", Exchange: "SZ", Source: "gotdx",
 			Params: map[string]any{"market": uint8(0), "kind": "stock"},
 		}},
 		LoadedAt: now.Add(-time.Hour),
 	}, found: true}
-	cache := newSymbolDirectoryCache(loader, store, 24*time.Hour)
+	cache := NewCache(loader, store, 24*time.Hour)
 	cache.now = func() time.Time { return now }
 
-	items, err := cache.search("000001", 20)
+	items, err := cache.Search("000001", 20)
 	if err != nil || len(items) != 1 {
 		t.Fatalf("search = %#v, err:%v", items, err)
 	}
@@ -116,18 +111,18 @@ func TestSymbolDirectoryCacheUsesFreshPersistedSnapshot(t *testing.T) {
 // 验证刷新失败时符号目录缓存回退过期持久化快照。
 func TestSymbolDirectoryCacheUsesStalePersistedSnapshotWhenRefreshFails(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
-	loader := &fakeSymbolDirectoryLoader{err: errors.New("TDX unavailable")}
-	store := &fakeSymbolDirectoryStore{snapshot: symbolDirectorySnapshot{
-		Entries: []symbolSearchItem{{
+	loader := &fakeLoader{err: errors.New("TDX unavailable")}
+	store := &fakeStore{snapshot: Snapshot{
+		Entries: []Item{{
 			Symbol: "000001", Description: "Ping An", Exchange: "SZ", Source: "gotdx",
 			Params: map[string]any{"market": uint8(0), "kind": "stock"},
 		}},
 		LoadedAt: now.Add(-25 * time.Hour),
 	}, found: true}
-	cache := newSymbolDirectoryCache(loader, store, 24*time.Hour)
+	cache := NewCache(loader, store, 24*time.Hour)
 	cache.now = func() time.Time { return now }
 
-	items, err := cache.search("000001", 20)
+	items, err := cache.Search("000001", 20)
 	if err != nil || len(items) != 1 {
 		t.Fatalf("search = %#v, err:%v", items, err)
 	}
@@ -139,14 +134,14 @@ func TestSymbolDirectoryCacheUsesStalePersistedSnapshotWhenRefreshFails(t *testi
 // 验证符号目录刷新成功后写入持久化存储。
 func TestSymbolDirectoryCachePersistsSuccessfulRefresh(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
-	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{
+	loader := &fakeLoader{stocks: map[uint8][]proto.Security{
 		0: {{Code: "000001", Name: "Ping An"}},
 	}}
-	store := &fakeSymbolDirectoryStore{}
-	cache := newSymbolDirectoryCache(loader, store, 24*time.Hour)
+	store := &fakeStore{}
+	cache := NewCache(loader, store, 24*time.Hour)
 	cache.now = func() time.Time { return now }
 
-	items, err := cache.search("000001", 20)
+	items, err := cache.Search("000001", 20)
 	if err != nil || len(items) != 1 {
 		t.Fatalf("search = %#v, err:%v", items, err)
 	}
@@ -161,17 +156,17 @@ func TestSymbolDirectoryCachePersistsSuccessfulRefresh(t *testing.T) {
 // 验证持久化读写失败不影响符号目录缓存可用性。
 func TestSymbolDirectoryCacheIgnoresStoreReadAndWriteFailures(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
-	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{
+	loader := &fakeLoader{stocks: map[uint8][]proto.Security{
 		0: {{Code: "000001", Name: "Ping An"}},
 	}}
-	store := &fakeSymbolDirectoryStore{
+	store := &fakeStore{
 		loadErr:    errors.New("read failed"),
 		replaceErr: errors.New("write failed"),
 	}
-	cache := newSymbolDirectoryCache(loader, store, 24*time.Hour)
+	cache := NewCache(loader, store, 24*time.Hour)
 	cache.now = func() time.Time { return now }
 
-	items, err := cache.search("000001", 20)
+	items, err := cache.Search("000001", 20)
 	if err != nil || len(items) != 1 {
 		t.Fatalf("search = %#v, err:%v", items, err)
 	}
@@ -184,32 +179,32 @@ func TestSymbolDirectoryCacheIgnoresStoreReadAndWriteFailures(t *testing.T) {
 func TestSymbolDirectoryCacheReusesSQLiteSnapshotAcrossInstances(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	path := filepath.Join(t.TempDir(), "symbols.db")
-	firstStore, err := newSQLiteSymbolDirectoryStore(path)
+	firstStore, err := NewSQLiteStore(path)
 	if err != nil {
 		t.Fatalf("open first store: %v", err)
 	}
-	firstLoader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{
+	firstLoader := &fakeLoader{stocks: map[uint8][]proto.Security{
 		0: {{Code: "000001", Name: "Ping An"}},
 	}}
-	firstCache := newSymbolDirectoryCache(firstLoader, firstStore, 24*time.Hour)
+	firstCache := NewCache(firstLoader, firstStore, 24*time.Hour)
 	firstCache.now = func() time.Time { return now }
-	if _, err := firstCache.search("000001", 20); err != nil {
+	if _, err := firstCache.Search("000001", 20); err != nil {
 		t.Fatalf("populate first cache: %v", err)
 	}
 	if err := firstStore.Close(); err != nil {
 		t.Fatalf("close first store: %v", err)
 	}
 
-	secondStore, err := newSQLiteSymbolDirectoryStore(path)
+	secondStore, err := NewSQLiteStore(path)
 	if err != nil {
 		t.Fatalf("open second store: %v", err)
 	}
 	t.Cleanup(func() { _ = secondStore.Close() })
-	secondLoader := &fakeSymbolDirectoryLoader{err: errors.New("loader must not be called")}
-	secondCache := newSymbolDirectoryCache(secondLoader, secondStore, 24*time.Hour)
+	secondLoader := &fakeLoader{err: errors.New("loader must not be called")}
+	secondCache := NewCache(secondLoader, secondStore, 24*time.Hour)
 	secondCache.now = func() time.Time { return now }
 
-	items, err := secondCache.search("000001", 20)
+	items, err := secondCache.Search("000001", 20)
 	if err != nil || len(items) != 1 {
 		t.Fatalf("search second cache = %#v, err:%v", items, err)
 	}
@@ -221,7 +216,7 @@ func TestSymbolDirectoryCacheReusesSQLiteSnapshotAcrossInstances(t *testing.T) {
 // 验证符号搜索优先匹配代码并应用结果上限。
 func TestSymbolSearchRanksCodeBeforeNameAndAppliesLimit(t *testing.T) {
 	now := time.Unix(0, 0)
-	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{
+	loader := &fakeLoader{stocks: map[uint8][]proto.Security{
 		0: {
 			{Code: "ABC", Name: "other"},
 			{Code: "ABCD", Name: "other"},
@@ -231,9 +226,9 @@ func TestSymbolSearchRanksCodeBeforeNameAndAppliesLimit(t *testing.T) {
 			{Code: "003", Name: "name ABC tail"},
 		},
 	}}
-	cache := newSearchTestCache(loader, &now)
+	cache := newTestCache(loader, &now)
 
-	items, err := cache.search("aBc", 4)
+	items, err := cache.Search("aBc", 4)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -251,45 +246,45 @@ func TestSymbolSearchRanksCodeBeforeNameAndAppliesLimit(t *testing.T) {
 // 验证符号搜索返回 gotdx 元数据并去重。
 func TestSymbolSearchReturnsGotdxMetadataAndDeduplicates(t *testing.T) {
 	now := time.Unix(0, 0)
-	loader := &fakeSymbolDirectoryLoader{
+	loader := &fakeLoader{
 		stocks: map[uint8][]proto.Security{0: {{Code: "000001", Name: "Ping An Bank"}}},
 		ex: []proto.ExListItem{
 			{Market: 2, Category: 7, Code: "HK0001", Name: "Tencent"},
 			{Market: 2, Category: 7, Code: "HK0001", Name: "Tencent duplicate"},
 		},
 	}
-	cache := newSearchTestCache(loader, &now)
+	cache := newTestCache(loader, &now)
 
-	mainItems, err := cache.search("000001", 20)
+	mainItems, err := cache.Search("000001", 20)
 	if err != nil {
 		t.Fatalf("main search: %v", err)
 	}
 	if len(mainItems) != 1 {
 		t.Fatalf("main items = %d, want 1", len(mainItems))
 	}
-	if got, want := mainItems[0], (symbolSearchItem{
+	if got, want := mainItems[0], (Item{
 		Symbol:      "000001",
 		Description: "Ping An Bank",
 		Exchange:    "SZ",
 		Source:      "gotdx",
-		Params:      map[string]any{"market": uint8(0), "kind": symbolKindStock},
+		Params:      map[string]any{"market": uint8(0), "kind": KindStock},
 	}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("main item = %#v, want %#v", got, want)
 	}
 
-	exItems, err := cache.search("hk0001", 20)
+	exItems, err := cache.Search("hk0001", 20)
 	if err != nil {
 		t.Fatalf("extended search: %v", err)
 	}
 	if len(exItems) != 1 {
 		t.Fatalf("extended items = %d, want 1", len(exItems))
 	}
-	if got, want := exItems[0], (symbolSearchItem{
+	if got, want := exItems[0], (Item{
 		Symbol:      "HK0001",
 		Description: "Tencent",
 		Exchange:    "HK",
 		Source:      "gotdx",
-		Params:      map[string]any{"category": uint8(7), "kind": symbolKindEx},
+		Params:      map[string]any{"category": uint8(7), "kind": KindEx},
 	}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("extended item = %#v, want %#v", got, want)
 	}
@@ -298,11 +293,11 @@ func TestSymbolSearchReturnsGotdxMetadataAndDeduplicates(t *testing.T) {
 // 验证未过期时符号目录缓存复用内存目录。
 func TestSymbolDirectoryCacheReusesFreshDirectory(t *testing.T) {
 	now := time.Unix(0, 0)
-	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{0: {{Code: "000001", Name: "Ping An"}}}}
-	cache := newSearchTestCache(loader, &now)
+	loader := &fakeLoader{stocks: map[uint8][]proto.Security{0: {{Code: "000001", Name: "Ping An"}}}}
+	cache := newTestCache(loader, &now)
 
 	for range 2 {
-		if _, err := cache.search("000001", 20); err != nil {
+		if _, err := cache.Search("000001", 20); err != nil {
 			t.Fatalf("search: %v", err)
 		}
 	}
@@ -314,15 +309,15 @@ func TestSymbolDirectoryCacheReusesFreshDirectory(t *testing.T) {
 // 验证刷新失败后符号目录缓存回退旧内存目录。
 func TestSymbolDirectoryCacheFallsBackToOldDirectoryAfterRefreshFailure(t *testing.T) {
 	now := time.Unix(0, 0)
-	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{0: {{Code: "000001", Name: "Ping An"}}}}
-	cache := newSearchTestCache(loader, &now)
+	loader := &fakeLoader{stocks: map[uint8][]proto.Security{0: {{Code: "000001", Name: "Ping An"}}}}
+	cache := newTestCache(loader, &now)
 
-	if _, err := cache.search("000001", 20); err != nil {
+	if _, err := cache.Search("000001", 20); err != nil {
 		t.Fatalf("initial search: %v", err)
 	}
 	loader.err = errors.New("TDX unavailable")
 	now = now.Add(31 * time.Minute)
-	items, err := cache.search("000001", 20)
+	items, err := cache.Search("000001", 20)
 	if err != nil {
 		t.Fatalf("fallback search: %v", err)
 	}
@@ -330,43 +325,10 @@ func TestSymbolDirectoryCacheFallsBackToOldDirectoryAfterRefreshFailure(t *testi
 		t.Fatalf("fallback items = %#v", items)
 	}
 	failedRefreshCalls := loader.stockCalls
-	if _, err := cache.search("000001", 20); err != nil {
+	if _, err := cache.Search("000001", 20); err != nil {
 		t.Fatalf("second fallback search: %v", err)
 	}
 	if loader.stockCalls != failedRefreshCalls {
 		t.Fatalf("loader retried before backoff elapsed: calls = %d, want %d", loader.stockCalls, failedRefreshCalls)
-	}
-}
-
-// 验证符号搜索路由已注册并校验请求参数。
-func TestSymbolSearchHandlerValidatesRequestAndIsRegistered(t *testing.T) {
-	now := time.Unix(0, 0)
-	loader := &fakeSymbolDirectoryLoader{stocks: map[uint8][]proto.Security{0: {{Code: "000001", Name: "Ping An"}}}}
-	router := newRouter(newSearchTestCache(loader, &now))
-	for _, body := range []string{"{", `{"query":"   "}`} {
-		req := httptest.NewRequest(http.MethodPost, "/api/symbol/search", bytes.NewBufferString(body))
-		req.Header.Set("Content-Type", "application/json")
-		resp := httptest.NewRecorder()
-		router.ServeHTTP(resp, req)
-		if resp.Code != http.StatusBadRequest {
-			t.Fatalf("POST /api/symbol/search %s = %d, want 400", body, resp.Code)
-		}
-	}
-
-	handlerRouter := gin.New()
-	handlerRouter.POST("/api/symbol/search", newSymbolSearchHandler(newSearchTestCache(loader, &now)))
-	req := httptest.NewRequest(http.MethodPost, "/api/symbol/search", bytes.NewBufferString(`{"query":"000001","limit":101}`))
-	req.Header.Set("Content-Type", "application/json")
-	resp := httptest.NewRecorder()
-	handlerRouter.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("handler status = %d, want 200: %s", resp.Code, resp.Body.String())
-	}
-	var items []symbolSearchItem
-	if err := json.Unmarshal(resp.Body.Bytes(), &items); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if len(items) != 1 {
-		t.Fatalf("items = %d, want 1", len(items))
 	}
 }

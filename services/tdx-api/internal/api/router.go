@@ -8,6 +8,8 @@ import (
 	"runtime/debug"
 
 	"KlineChartQuantGo/services/tdx-api/internal/client"
+	"KlineChartQuantGo/services/tdx-api/internal/directory"
+	"KlineChartQuantGo/services/tdx-api/internal/v1"
 	"github.com/gin-gonic/gin"
 )
 
@@ -41,25 +43,25 @@ func NewRouter() *gin.Engine {
 	if path == "" {
 		path = filepath.Join("data", "tdx-symbols.db")
 	}
-	store, err := newSQLiteSymbolDirectoryStore(path)
+	store, err := directory.NewSQLiteStore(path)
 	if err != nil {
 		log.Printf("symbol directory database disabled: %v", err)
 		store = nil
 	}
-	cache := newSymbolDirectoryCache(gotdxSymbolDirectoryLoader{}, store, symbolDirectoryTTL)
+	cache := directory.NewCache(directory.GotdxLoader{}, store, 0)
 	go func() {
-		if err := cache.warmUp(); err != nil {
+		if err := cache.WarmUp(); err != nil {
 			log.Printf("symbol directory: warmup failed: %v", err)
 		}
 	}()
 	return newRouterWithStatus(cache, client.DefaultManager().Status)
 }
 
-func newRouter(symbolCache *symbolDirectoryCache) *gin.Engine {
+func newRouter(symbolCache *directory.Cache) *gin.Engine {
 	return newRouterWithStatus(symbolCache, client.DefaultManager().Status)
 }
 
-func newRouterWithStatus(symbolCache *symbolDirectoryCache, status func() client.Status) *gin.Engine {
+func newRouterWithStatus(symbolCache *directory.Cache, status func() client.Status) *gin.Engine {
 	r := gin.New()
 	r.Use(recoveryMiddleware(), corsMiddleware())
 	r.GET("/health/live", func(c *gin.Context) {
@@ -124,7 +126,7 @@ func newRouterWithStatus(symbolCache *symbolDirectoryCache, status func() client
 	r.GET("/api/hosts/list", handleHostList)
 	r.POST("/api/symbol/search", newSymbolSearchHandler(symbolCache))
 
-	registerV1Routes(r, symbolCache, status)
+	v1.RegisterRoutes(r, symbolCache, status)
 
 	return r
 }

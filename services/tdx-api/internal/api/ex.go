@@ -1,17 +1,16 @@
+// 扩展行情旧 HTTP 接口：请求解析、领域委托与响应序列化。
+// K 线分页、分时构建与昨收解析等领域逻辑统一在 domain 包。
 package api
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"math"
 	"net/http"
-	"sort"
-	"strconv"
-	"strings"
 	"time"
 
 	"KlineChartQuantGo/services/tdx-api/internal/client"
+	"KlineChartQuantGo/services/tdx-api/internal/domain"
 	"github.com/bensema/gotdx/proto"
 	"github.com/gin-gonic/gin"
 )
@@ -145,97 +144,14 @@ type exHistoryTickRequest struct {
 	Code     string `json:"code"`
 }
 
-type exTimeSharePreCloseSource struct {
-	now       func() time.Time
-	quote     func(category uint8, code string) (float64, error)
-	dailyBars func(category uint8, code string, date time.Time) ([]proto.ExKLineItem, error)
-}
-
-func newDefaultExTimeSharePreCloseSource() exTimeSharePreCloseSource {
-	return exTimeSharePreCloseSource{
-		now: time.Now,
-		quote: func(category uint8, code string) (float64, error) {
-			q, err := exCall(func(c client.ExQuerier) (*proto.ExQuoteItem, error) {
-				return c.ExQuote(category, code)
-			})
-			if err != nil {
-				return 0, err
-			}
-			if q == nil {
-				return 0, errors.New("empty ex quote response")
-			}
-			return q.PreClose, nil
-		},
-		dailyBars: func(category uint8, code string, date time.Time) ([]proto.ExKLineItem, error) {
-			// period 4 = 日线（与前端 PERIOD_TO_CATEGORY.daily 对齐）
-			return ExKLineRange(category, code, 4, 1, date, date)
-		},
-	}
-}
-
-// resolveExTimeSharePreClose 解析扩展行情分时昨收：目标日线为 SSOT，实时行情仅作当日日线缺失时的回退。
-// 不能优先实时行情：gotdx ExQuote.PreClose 对美股返回当日现价（非昨收），港股则常为 0，均不可靠；
-// 日线 ExKLine 的 PreClose 经实测与交易日历一致。
-// 日线昨收读取顺序：PreClose → LastClose → Open。
-func resolveExTimeSharePreClose(category uint8, code string, date uint32, source exTimeSharePreCloseSource) (float64, error) {
-	year := int(date / 10000)
-	month := time.Month((date % 10000) / 100)
-	day := int(date % 100)
-	loc := time.FixedZone("CST", 8*60*60)
-	target := time.Date(year, month, day, 0, 0, 0, 0, loc)
-	if target.Year() != year || target.Month() != month || target.Day() != day {
-		return 0, fmt.Errorf("invalid history date: %d", date)
-	}
-
-	bars, dailyErr := source.dailyBars(category, code, target)
-	if dailyErr == nil && len(bars) > 0 {
-		preClose := exKLinePreClose(bars[0])
-		if math.IsNaN(preClose) || math.IsInf(preClose, 0) || preClose <= 0 {
-			return 0, fmt.Errorf("invalid daily preClose: %v", preClose)
-		}
-		return preClose, nil
-	}
-
-	// 当日日线缺失（如盘前尚无当日 bar）回退实时行情；历史日无回退。
-	now := source.now().In(loc)
-	currentDate := uint32(now.Year()*10000 + int(now.Month())*100 + now.Day())
-	if date == currentDate {
-		preClose, quoteErr := source.quote(category, code)
-		if quoteErr == nil && !math.IsNaN(preClose) && !math.IsInf(preClose, 0) && preClose > 0 {
-			return preClose, nil
-		}
-	}
-	if dailyErr != nil {
-		return 0, dailyErr
-	}
-	return 0, errors.New("target daily bar not found")
-}
-
-// exKLinePreClose 读取扩展日线昨收：PreClose → LastClose → Open。
-func exKLinePreClose(bar proto.ExKLineItem) float64 {
-	if bar.PreClose > 0 {
-		return bar.PreClose
-	}
-	if bar.LastClose > 0 {
-		return bar.LastClose
-	}
-	return bar.Open
-}
-
-func fetchExHistoryTick(date uint32, category uint8, code string) ([]proto.ExTickChartData, error) {
-	return exCall(func(c client.ExQuerier) ([]proto.ExTickChartData, error) {
-		return c.ExTickChart(category, code, date)
-	})
-}
-
 func handleExHistoryTick(c *gin.Context) {
-	handleExHistoryTickWithDeps(c, fetchExHistoryTick, newDefaultExTimeSharePreCloseSource())
+	handleExHistoryTickWithDeps(c, domain.FetchExHistoryTick, domain.NewDefaultExPreCloseSource())
 }
 
 func handleExHistoryTickWithDeps(
 	c *gin.Context,
-	fetchTick func(date uint32, category uint8, code string) ([]proto.ExTickChartData, error),
-	preCloseSource exTimeSharePreCloseSource,
+	fetchTick domain.ExHistoryTickFetcher,
+	preCloseSource domain.ExPreCloseSource,
 ) {
 	var req exHistoryTickRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -247,9 +163,12 @@ func handleExHistoryTickWithDeps(
 		return
 	}
 
-	points, err := buildExTimeSharePoints(req, fetchTick)
+	points, err := domain.BuildExTimeSharePoints(
+		domain.ExTimeShareRequest{Date: req.Date, Category: req.Category, Code: req.Code},
+		fetchTick,
+	)
 	if err != nil {
-		if errors.Is(err, errV1NoTimeShareData) {
+		if errors.Is(err, domain.ErrNoTimeShareData) {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 			return
 		}
@@ -260,38 +179,18 @@ func handleExHistoryTickWithDeps(
 	resp := make([]stockHistoryTickItem, 0, len(points))
 	for _, p := range points {
 		resp = append(resp, stockHistoryTickItem{
-			Timestamp: p.at.Format("2006-01-02T15:04:05-07:00"),
-			Price:     p.price,
-			Avg:       p.avg,
+			Timestamp: p.At.Format("2006-01-02T15:04:05-07:00"),
+			Price:     p.Price,
+			Avg:       p.Avg,
 		})
 	}
 
-	preClose, err := resolveExTimeSharePreClose(req.Category, req.Code, req.Date, preCloseSource)
+	preClose, err := domain.ResolveExPreClose(req.Category, req.Code, req.Date, preCloseSource)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "resolve preClose: " + err.Error()})
 		return
 	}
 	c.JSON(200, newStockHistoryTickResponse(preClose, resp))
-}
-
-// parseExTickClock 将 gotdx "HH:mm" 接到目标日 Asia/Shanghai 墙钟
-func parseExTickClock(base time.Time, clock string) (time.Time, error) {
-	parts := strings.Split(clock, ":")
-	if len(parts) != 2 {
-		return time.Time{}, fmt.Errorf("expected HH:mm, got %q", clock)
-	}
-	hour, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return time.Time{}, err
-	}
-	minute, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return time.Time{}, err
-	}
-	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
-		return time.Time{}, fmt.Errorf("out of range HH:mm %q", clock)
-	}
-	return time.Date(base.Year(), base.Month(), base.Day(), hour, minute, 0, 0, base.Location()), nil
 }
 
 func handleExHistoryTransaction(c *gin.Context) {
@@ -328,50 +227,6 @@ type exKLineByDateRequest struct {
 	Times     uint16 `json:"times"`
 }
 
-// filterExKLineByDate 按日期区间过滤扩展 K 线，去重并升序
-func filterExKLineByDate(klines []proto.ExKLineItem, startDate, endDate time.Time) []proto.ExKLineItem {
-	out := make([]proto.ExKLineItem, 0, len(klines))
-	seen := make(map[int64]bool)
-	end := endDate.Add(24 * time.Hour)
-
-	for _, k := range klines {
-		if k.DateTime.IsZero() {
-			continue
-		}
-		key := k.DateTime.UnixNano()
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		if (k.DateTime.Equal(startDate) || k.DateTime.After(startDate)) && k.DateTime.Before(end) {
-			out = append(out, k)
-		}
-	}
-
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].DateTime.Before(out[j].DateTime)
-	})
-	return out
-}
-
-// fetchExKLinePage 可测注入点；生产默认走 safeExKLine
-var fetchExKLinePage = safeExKLine
-
-func exKLineOldest(k proto.ExKLineItem) (time.Time, bool) {
-	return k.DateTime, !k.DateTime.IsZero()
-}
-
-// ExKLineRange 按 ExKLine 分页拉取扩展行情并按日期过滤
-func ExKLineRange(category uint8, code string, period uint16, times uint16, startDate, endDate time.Time) ([]proto.ExKLineItem, error) {
-	raw, err := paginateFromRecent(klinePageSize, func(start uint32, count uint16) ([]proto.ExKLineItem, error) {
-		return fetchExKLinePage(category, code, period, start, count, times)
-	}, exKLineOldest, startDate, false)
-	if err != nil {
-		return nil, err
-	}
-	return filterExKLineByDate(raw, startDate, endDate), nil
-}
-
 type exKLineByDateResponse struct {
 	proto.ExKLineItem
 	Amplitude float64 `json:"Amplitude"`
@@ -397,7 +252,7 @@ func handleExKLineByDate(c *gin.Context) {
 		req.Times = 1
 	}
 
-	klines, err := ExKLineRange(req.Category, req.Code, req.Period, req.Times, start, end)
+	klines, err := domain.ExKLineRange(req.Category, req.Code, req.Period, req.Times, start, end)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return

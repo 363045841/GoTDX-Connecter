@@ -1,6 +1,6 @@
 // V1 行情协议路由层：统一 envelope 包装、数据源探测与品种目录搜索。
 // V1 为前端唯一数据接入层，接口契约以 KLineChartQuant 前端 api/types.ts 为准。
-package api
+package v1
 
 import (
 	"net/http"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"KlineChartQuantGo/services/tdx-api/internal/client"
+	"KlineChartQuantGo/services/tdx-api/internal/directory"
 	"github.com/bensema/gotdx/proto"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -21,6 +22,12 @@ const (
 	v1CodeUpstreamUnavailable   = "UPSTREAM_UNAVAILABLE"
 	v1CodeInvalidResponse       = "INVALID_RESPONSE"
 	v1CodeInternal              = "INTERNAL"
+)
+
+// 品种搜索分页限制，独立于旧 /api/symbol/search 接口。
+const (
+	defaultSearchLimit = 20
+	maxSearchLimit     = 100
 )
 
 // v1Envelope V1 成功响应外壳。
@@ -44,11 +51,11 @@ type v1ErrorEnvelope struct {
 
 // v1SourceProbe 数据源探测结果，与前端 V1SourceProbe 对齐。
 type v1SourceProbe struct {
-	Status       string                  `json:"status"`
-	CheckedAt    int64                   `json:"checkedAt"`
-	LatencyMs    int64                   `json:"latencyMs,omitempty"`
-	Message      string                  `json:"message,omitempty"`
-	Capabilities *v1SourceCapabilities   `json:"capabilities,omitempty"`
+	Status       string                `json:"status"`
+	CheckedAt    int64                 `json:"checkedAt"`
+	LatencyMs    int64                 `json:"latencyMs,omitempty"`
+	Message      string                `json:"message,omitempty"`
+	Capabilities *v1SourceCapabilities `json:"capabilities,omitempty"`
 }
 
 // v1InstrumentSearchRequest 品种目录搜索请求。
@@ -77,8 +84,8 @@ func writeV1Error(c *gin.Context, status int, code, message string) {
 	})
 }
 
-// registerV1Routes 注册 V1 行情协议路由。
-func registerV1Routes(r *gin.Engine, symbolCache *symbolDirectoryCache, status func() client.Status) {
+// RegisterRoutes 注册 V1 行情协议路由。
+func RegisterRoutes(r *gin.Engine, symbolCache *directory.Cache, status func() client.Status) {
 	v1 := r.Group("/api/v1/market-data")
 	{
 		v1.GET("/sources/:sourceId/probe", handleV1Probe(status))
@@ -129,7 +136,7 @@ func handleV1ProbeWithDeps(status func() client.Status, heartbeat v1HeartbeatPro
 }
 
 // handleV1Search 按关键字搜索标准品种目录并映射为 V1 品种描述。
-func handleV1Search(cache *symbolDirectoryCache) gin.HandlerFunc {
+func handleV1Search(cache *directory.Cache) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req v1InstrumentSearchRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -147,12 +154,12 @@ func handleV1Search(cache *symbolDirectoryCache) gin.HandlerFunc {
 		}
 		limit := req.Limit
 		if limit <= 0 {
-			limit = defaultSymbolSearchLimit
+			limit = defaultSearchLimit
 		}
-		if limit > maxSymbolSearchLimit {
-			limit = maxSymbolSearchLimit
+		if limit > maxSearchLimit {
+			limit = maxSearchLimit
 		}
-		items, err := cache.search(keyword, limit)
+		items, err := cache.Search(keyword, limit)
 		if err != nil {
 			writeV1Error(c, http.StatusBadGateway, v1CodeUpstreamUnavailable, err.Error())
 			return

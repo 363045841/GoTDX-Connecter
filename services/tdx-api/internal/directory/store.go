@@ -1,4 +1,5 @@
-package api
+// 证券目录 SQLite 持久化：快照读写、一致性替换与 WAL 日志模式。
+package directory
 
 import (
 	"database/sql"
@@ -11,7 +12,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const symbolDirectorySchema = `
+const sqliteSchema = `
 CREATE TABLE IF NOT EXISTS symbol_directory (
 	source TEXT NOT NULL,
 	param_kind TEXT NOT NULL CHECK (param_kind IN ('market', 'category')),
@@ -29,21 +30,13 @@ CREATE TABLE IF NOT EXISTS symbol_directory_metadata (
 
 const sqliteBusyTimeout = 5 * time.Second
 
-type symbolDirectorySnapshot struct {
-	Entries  []symbolSearchItem
-	LoadedAt time.Time
-}
-
-type symbolDirectoryStore interface {
-	Load() (symbolDirectorySnapshot, bool, error)
-	Replace(snapshot symbolDirectorySnapshot) error
-}
-
-type sqliteSymbolDirectoryStore struct {
+// SQLiteStore 基于 SQLite 的证券目录快照存储。
+type SQLiteStore struct {
 	db *sql.DB
 }
 
-func newSQLiteSymbolDirectoryStore(path string) (*sqliteSymbolDirectoryStore, error) {
+// NewSQLiteStore 打开或创建证券目录 SQLite 数据库。
+func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create symbol database directory: %w", err)
 	}
@@ -53,7 +46,7 @@ func newSQLiteSymbolDirectoryStore(path string) (*sqliteSymbolDirectoryStore, er
 		return nil, fmt.Errorf("open symbol database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(symbolDirectorySchema); err != nil {
+	if _, err := db.Exec(sqliteSchema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize symbol database: %w", err)
 	}
@@ -64,23 +57,24 @@ func newSQLiteSymbolDirectoryStore(path string) (*sqliteSymbolDirectoryStore, er
 			return nil, fmt.Errorf("migrate symbol directory kind column: %w", err)
 		}
 	}
-	return &sqliteSymbolDirectoryStore{db: db}, nil
+	return &SQLiteStore{db: db}, nil
 }
 
-func (s *sqliteSymbolDirectoryStore) Load() (symbolDirectorySnapshot, bool, error) {
+// Load 读取证券目录快照；无快照时返回 found=false。
+func (s *SQLiteStore) Load() (Snapshot, bool, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return symbolDirectorySnapshot{}, false, fmt.Errorf("begin symbol directory read: %w", err)
+		return Snapshot{}, false, fmt.Errorf("begin symbol directory read: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	var loadedAtUnix int64
 	err = tx.QueryRow(`SELECT loaded_at_unix FROM symbol_directory_metadata WHERE id = 1`).Scan(&loadedAtUnix)
 	if err == sql.ErrNoRows {
-		return symbolDirectorySnapshot{}, false, nil
+		return Snapshot{}, false, nil
 	}
 	if err != nil {
-		return symbolDirectorySnapshot{}, false, fmt.Errorf("read symbol directory metadata: %w", err)
+		return Snapshot{}, false, fmt.Errorf("read symbol directory metadata: %w", err)
 	}
 
 	rows, err := tx.Query(`
@@ -88,41 +82,42 @@ func (s *sqliteSymbolDirectoryStore) Load() (symbolDirectorySnapshot, bool, erro
 		FROM symbol_directory
 		ORDER BY rowid`)
 	if err != nil {
-		return symbolDirectorySnapshot{}, false, fmt.Errorf("read symbol directory: %w", err)
+		return Snapshot{}, false, fmt.Errorf("read symbol directory: %w", err)
 	}
-	entries := make([]symbolSearchItem, 0)
+	entries := make([]Item, 0)
 	for rows.Next() {
-		var item symbolSearchItem
+		var item Item
 		var paramKind string
 		var paramValue uint8
 		var kind string
 		if err := rows.Scan(&item.Source, &paramKind, &paramValue, &item.Symbol, &item.Description, &item.Exchange, &kind); err != nil {
 			_ = rows.Close()
-			return symbolDirectorySnapshot{}, false, fmt.Errorf("scan symbol directory: %w", err)
+			return Snapshot{}, false, fmt.Errorf("scan symbol directory: %w", err)
 		}
 		if kind == "" {
-			kind = symbolKindStock
+			kind = KindStock
 		}
 		item.Params = map[string]any{paramKind: paramValue, "kind": kind}
 		entries = append(entries, item)
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return symbolDirectorySnapshot{}, false, fmt.Errorf("iterate symbol directory: %w", err)
+		return Snapshot{}, false, fmt.Errorf("iterate symbol directory: %w", err)
 	}
 	if err := rows.Close(); err != nil {
-		return symbolDirectorySnapshot{}, false, fmt.Errorf("close symbol directory rows: %w", err)
+		return Snapshot{}, false, fmt.Errorf("close symbol directory rows: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return symbolDirectorySnapshot{}, false, fmt.Errorf("commit symbol directory read: %w", err)
+		return Snapshot{}, false, fmt.Errorf("commit symbol directory read: %w", err)
 	}
-	return symbolDirectorySnapshot{
+	return Snapshot{
 		Entries:  entries,
 		LoadedAt: time.Unix(loadedAtUnix, 0).UTC(),
 	}, true, nil
 }
 
-func (s *sqliteSymbolDirectoryStore) Replace(snapshot symbolDirectorySnapshot) error {
+// Replace 以事务方式替换证券目录快照，失败时回滚保持原快照。
+func (s *SQLiteStore) Replace(snapshot Snapshot) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin symbol directory replacement: %w", err)
@@ -142,7 +137,7 @@ func (s *sqliteSymbolDirectoryStore) Replace(snapshot symbolDirectorySnapshot) e
 	defer stmt.Close()
 
 	for _, item := range snapshot.Entries {
-		paramKind, paramValue, kind, err := symbolDirectoryParam(item.Params)
+		paramKind, paramValue, kind, err := directoryParam(item.Params)
 		if err != nil {
 			return err
 		}
@@ -162,12 +157,12 @@ func (s *sqliteSymbolDirectoryStore) Replace(snapshot symbolDirectorySnapshot) e
 	return nil
 }
 
-// symbolDirectoryParam 拆出 SQLite 主键用的 market|category，以及品种 kind
-func symbolDirectoryParam(params map[string]any) (paramKind string, paramValue uint8, kind string, err error) {
+// directoryParam 拆出 SQLite 主键用的 market|category，以及品种 kind
+func directoryParam(params map[string]any) (paramKind string, paramValue uint8, kind string, err error) {
 	if params == nil {
 		return "", 0, "", fmt.Errorf("symbol directory params are empty")
 	}
-	kind = symbolKindStock
+	kind = KindStock
 	if k, ok := params["kind"].(string); ok && k != "" {
 		kind = k
 	}
@@ -217,6 +212,7 @@ func anyToUint8(v any) (uint8, bool) {
 	}
 }
 
-func (s *sqliteSymbolDirectoryStore) Close() error {
+// Close 关闭底层数据库连接。
+func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }

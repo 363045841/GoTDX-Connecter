@@ -1,5 +1,5 @@
 // V1 协议 K 线接口：按 providerRef 的 kind 路由到股票/指数/扩展行情，并映射为 V1 序列。
-package api
+package v1
 
 import (
 	"errors"
@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"KlineChartQuantGo/services/tdx-api/internal/domain"
 	"github.com/gin-gonic/gin"
 )
 
@@ -80,13 +81,13 @@ func handleV1Bars(c *gin.Context) {
 
 	items := make([]v1KLineItem, 0)
 	switch kind {
-	case symbolKindIndex:
+	case domain.KindIndex:
 		market, ok := v1ProviderRefNumber(ref, "market")
 		if !ok {
 			writeV1Error(c, http.StatusBadRequest, v1CodeInvalidRequest, "providerRef.market is required for index")
 			return
 		}
-		bars, err := IndexKLineRange(category, uint8(market), req.Instrument.Symbol, startDate, endDate)
+		bars, err := domain.IndexKLineRange(category, uint8(market), req.Instrument.Symbol, startDate, endDate)
 		if err != nil {
 			writeV1Error(c, http.StatusBadGateway, v1CodeUpstreamUnavailable, err.Error())
 			return
@@ -94,13 +95,13 @@ func handleV1Bars(c *gin.Context) {
 		for _, bar := range bars {
 			items = append(items, securityBarToV1KLine(bar))
 		}
-	case symbolKindEx:
+	case domain.KindEx:
 		cat, ok := v1ProviderRefNumber(ref, "category")
 		if !ok {
 			writeV1Error(c, http.StatusBadRequest, v1CodeInvalidRequest, "providerRef.category is required for ex")
 			return
 		}
-		bars, err := ExKLineRange(uint8(cat), req.Instrument.Symbol, category, 1, startDate, endDate)
+		bars, err := domain.ExKLineRange(uint8(cat), req.Instrument.Symbol, category, 1, startDate, endDate)
 		if err != nil {
 			writeV1Error(c, http.StatusBadGateway, v1CodeUpstreamUnavailable, err.Error())
 			return
@@ -114,7 +115,7 @@ func handleV1Bars(c *gin.Context) {
 			writeV1Error(c, http.StatusBadRequest, v1CodeInvalidRequest, "providerRef.market is required")
 			return
 		}
-		bars, err := StockKLineRange(category, uint8(market), req.Instrument.Symbol, 1, adjust, startDate, endDate)
+		bars, err := domain.StockKLineRange(category, uint8(market), req.Instrument.Symbol, 1, adjust, startDate, endDate)
 		if err != nil {
 			writeV1Error(c, http.StatusBadGateway, v1CodeUpstreamUnavailable, err.Error())
 			return

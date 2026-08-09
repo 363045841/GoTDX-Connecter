@@ -1,12 +1,14 @@
 // V1 协议映射层：负责周期/复权/时区/资产类别的转换，以及内部数据到 V1 DTO 的映射。
 // 映射表与前端旧 gotdx.ts 的 PERIOD_TO_CATEGORY / ADJUST_MAP 保持一致。
-package api
+package v1
 
 import (
 	"fmt"
 	"math"
 	"strings"
 
+	"KlineChartQuantGo/services/tdx-api/internal/directory"
+	"KlineChartQuantGo/services/tdx-api/internal/domain"
 	"github.com/bensema/gotdx/proto"
 )
 
@@ -77,7 +79,7 @@ func v1SourceCapabilitiesFor() v1SourceCapabilities {
 // kind=stock 经 StockKLine 支持复权；index/ex 均无复权参数，仅支持 none。
 func v1InstrumentCapabilitiesFor(kind string) v1InstrumentCapabilities {
 	adjustments := []string{"none"}
-	if kind == symbolKindStock {
+	if kind == domain.KindStock {
 		adjustments = []string{"qfq", "hfq", "none"}
 	}
 	timeShare := true
@@ -160,10 +162,10 @@ func v1ExchangeToCurrency(exchange string) string {
 
 // v1AssetClass 由品种 kind 与交易所归一化前端资产类别；规则与旧前端 resolveGotdxAssetClass 一致。
 func v1AssetClass(exchange, kind string) string {
-	if kind == symbolKindIndex {
+	if kind == domain.KindIndex {
 		return "index"
 	}
-	if kind == symbolKindStock {
+	if kind == domain.KindStock {
 		return "stock"
 	}
 	switch strings.ToUpper(strings.TrimSpace(exchange)) {
@@ -216,7 +218,7 @@ func v1ProviderRefNumber(ref map[string]any, key string) (int, bool) {
 }
 
 // toV1Instrument 将内部搜索项映射为 V1 品种描述。
-func toV1Instrument(item symbolSearchItem) v1InstrumentDescriptor {
+func toV1Instrument(item directory.Item) v1InstrumentDescriptor {
 	kind := ""
 	key := 0
 	if params := item.Params; params != nil {
@@ -284,7 +286,7 @@ func securityBarToV1KLine(bar proto.SecurityBar) v1KLineItem {
 	risePrice, riseRate := bar.RisePrice, bar.RiseRate
 	item.Volume, item.Turnover, item.TurnoverRate = &volume, &turnover, &rate
 	item.ChangeAmount, item.ChangePercent = &risePrice, &riseRate
-	item.Amplitude = v1Amplitude(securityBarPreClose(bar), bar.High, bar.Low)
+	item.Amplitude = v1Amplitude(domain.SecurityBarPreClose(bar), bar.High, bar.Low)
 	return item
 }
 
@@ -304,6 +306,6 @@ func exKLineToV1KLine(item proto.ExKLineItem) v1KLineItem {
 	risePrice, riseRate := item.RisePrice, item.RiseRate
 	entry.Volume, entry.Turnover = &volume, &turnover
 	entry.ChangeAmount, entry.ChangePercent = &risePrice, &riseRate
-	entry.Amplitude = v1Amplitude(exKLinePreClose(item), item.High, item.Low)
+	entry.Amplitude = v1Amplitude(domain.ExKLinePreClose(item), item.High, item.Low)
 	return entry
 }

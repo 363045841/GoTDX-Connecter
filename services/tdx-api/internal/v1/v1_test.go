@@ -1,5 +1,5 @@
 // 本文件测试 V1 协议路由：envelope 包装、探测、品种搜索、K 线与分时映射。
-package api
+package v1
 
 import (
 	"bytes"
@@ -11,14 +11,33 @@ import (
 	"time"
 
 	"KlineChartQuantGo/services/tdx-api/internal/client"
+	"KlineChartQuantGo/services/tdx-api/internal/directory"
+	"KlineChartQuantGo/services/tdx-api/internal/domain"
 	"github.com/bensema/gotdx/proto"
 	"github.com/gin-gonic/gin"
 )
 
-func newV1TestRouter(cache *symbolDirectoryCache, status func() client.Status) *gin.Engine {
+// fakeDirectoryLoader 为 V1 搜索测试提供可注入的证券目录加载器。
+type fakeDirectoryLoader struct {
+	stocks map[uint8][]proto.Security
+}
+
+func (l *fakeDirectoryLoader) StockAll(market uint8) ([]proto.Security, error) {
+	return l.stocks[market], nil
+}
+
+func (l *fakeDirectoryLoader) ExCount() (uint32, error) {
+	return 0, nil
+}
+
+func (l *fakeDirectoryLoader) ExList(uint32, uint16) ([]proto.ExListItem, error) {
+	return nil, nil
+}
+
+func newV1TestRouter(cache *directory.Cache, status func() client.Status) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	registerV1Routes(router, cache, status)
+	RegisterRoutes(router, cache, status)
 	return router
 }
 
@@ -105,13 +124,12 @@ func (e *errV1ProbeDown) Error() string { return "heartbeat refused" }
 
 // 验证品种搜索映射为 V1 品种描述并包装在 envelope 中。
 func TestV1SearchMapsInstruments(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0).UTC()
-	loader := &fakeSymbolDirectoryLoader{
+	loader := &fakeDirectoryLoader{
 		stocks: map[uint8][]proto.Security{
 			0: {{Code: "000001", Name: "平安银行"}},
 		},
 	}
-	cache := newSearchTestCache(loader, &now)
+	cache := directory.NewCache(loader, nil, 24*time.Hour)
 	router := newV1TestRouter(cache, func() client.Status { return client.Status{Ready: true} })
 
 	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/instruments/search",
@@ -158,7 +176,7 @@ func TestV1SearchMapsInstruments(t *testing.T) {
 
 // 验证搜索空关键字返回 INVALID_REQUEST 错误 envelope。
 func TestV1SearchRejectsEmptyKeyword(t *testing.T) {
-	router := newV1TestRouter(&symbolDirectoryCache{}, func() client.Status { return client.Status{Ready: true} })
+	router := newV1TestRouter(directory.NewCache(&fakeDirectoryLoader{}, nil, 24*time.Hour), func() client.Status { return client.Status{Ready: true} })
 	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/instruments/search",
 		`{"sourceId":"gotdx","keyword":"","limit":10}`)
 
@@ -169,11 +187,11 @@ func TestV1SearchRejectsEmptyKeyword(t *testing.T) {
 
 // 验证股票 K 线请求按 kind=stock 路由、映射复权参数并输出 V1 条目。
 func TestV1BarsStock(t *testing.T) {
-	original := fetchStockKLinePage
-	t.Cleanup(func() { fetchStockKLinePage = original })
+	original := domain.FetchStockKLinePage
+	t.Cleanup(func() { domain.FetchStockKLinePage = original })
 	loc := time.FixedZone("CST", 8*60*60)
 	day := time.Date(2026, 7, 24, 15, 0, 0, 0, loc)
-	fetchStockKLinePage = func(category uint16, market uint8, code string, start, count uint16, times, adjust uint16) ([]proto.SecurityBar, error) {
+	domain.FetchStockKLinePage = func(category uint16, market uint8, code string, start, count uint16, times, adjust uint16) ([]proto.SecurityBar, error) {
 		if category != 4 || market != 1 || code != "600519" || times != 1 || adjust != 1 {
 			t.Fatalf("StockKLine = cat=%d m=%d c=%s times=%d adjust=%d", category, market, code, times, adjust)
 		}
@@ -224,11 +242,11 @@ func TestV1BarsStock(t *testing.T) {
 
 // 验证指数 K 线请求按 kind=index 路由到指数接口。
 func TestV1BarsIndex(t *testing.T) {
-	original := fetchIndexBarsPage
-	t.Cleanup(func() { fetchIndexBarsPage = original })
+	original := domain.FetchIndexBarsPage
+	t.Cleanup(func() { domain.FetchIndexBarsPage = original })
 	loc := time.FixedZone("CST", 8*60*60)
 	day := time.Date(2026, 7, 24, 15, 0, 0, 0, loc)
-	fetchIndexBarsPage = func(category uint16, market uint8, code string, start, count uint16) ([]proto.SecurityBar, error) {
+	domain.FetchIndexBarsPage = func(category uint16, market uint8, code string, start, count uint16) ([]proto.SecurityBar, error) {
 		if category != 4 || market != 1 || code != "000001" {
 			t.Fatalf("GetIndexBars = cat=%d m=%d c=%s", category, market, code)
 		}
@@ -252,11 +270,11 @@ func TestV1BarsIndex(t *testing.T) {
 
 // 验证扩展行情 K 线请求按 kind=ex 路由到扩展接口。
 func TestV1BarsEx(t *testing.T) {
-	original := fetchExKLinePage
-	t.Cleanup(func() { fetchExKLinePage = original })
+	original := domain.FetchExKLinePage
+	t.Cleanup(func() { domain.FetchExKLinePage = original })
 	loc := time.FixedZone("CST", 8*60*60)
 	day := time.Date(2026, 7, 24, 15, 0, 0, 0, loc)
-	fetchExKLinePage = func(category uint8, code string, period uint16, start uint32, count uint16, times uint16) ([]proto.ExKLineItem, error) {
+	domain.FetchExKLinePage = func(category uint8, code string, period uint16, start uint32, count uint16, times uint16) ([]proto.ExKLineItem, error) {
 		if category != 31 || code != "HSI" || period != 4 {
 			t.Fatalf("ExKLine = cat=%d c=%s period=%d", category, code, period)
 		}
@@ -316,22 +334,22 @@ func TestV1BarsRejectsUnsupportedAdjustment(t *testing.T) {
 
 // 验证股票分时输出 unix 毫秒点与昨收。
 func TestV1TimeShareStock(t *testing.T) {
-	originalTick := v1FetchStockHistoryTick
-	originalOpening := fetchOpeningTrade
-	originalK := fetchStockKLinePage
+	originalTick := domain.FetchStockHistoryTick
+	originalOpening := domain.FetchOpeningTrade
+	originalK := domain.FetchStockKLinePage
 	t.Cleanup(func() {
-		v1FetchStockHistoryTick = originalTick
-		fetchOpeningTrade = originalOpening
-		fetchStockKLinePage = originalK
+		domain.FetchStockHistoryTick = originalTick
+		domain.FetchOpeningTrade = originalOpening
+		domain.FetchStockKLinePage = originalK
 	})
 	loc := time.FixedZone("CST", 8*60*60)
-	v1FetchStockHistoryTick = func(date uint32, market uint8, code string) ([]proto.HistoryMinuteTimeData, error) {
+	domain.FetchStockHistoryTick = func(date uint32, market uint8, code string) ([]proto.HistoryMinuteTimeData, error) {
 		return []proto.HistoryMinuteTimeData{{Price: 8.5, Avg: 8.5, Vol: 100}}, nil
 	}
-	fetchOpeningTrade = func(uint32, uint8, string, time.Time) (openingTrade, bool) {
-		return openingTrade{}, false
+	domain.FetchOpeningTrade = func(uint32, uint8, string, time.Time) (domain.OpeningTrade, bool) {
+		return domain.OpeningTrade{}, false
 	}
-	fetchStockKLinePage = func(category uint16, market uint8, code string, start, count uint16, times, adjust uint16) ([]proto.SecurityBar, error) {
+	domain.FetchStockKLinePage = func(category uint16, market uint8, code string, start, count uint16, times, adjust uint16) ([]proto.SecurityBar, error) {
 		return []proto.SecurityBar{{DateTime: time.Date(2026, 7, 24, 15, 0, 0, 0, loc), PreClose: 8.4}}, nil
 	}
 
@@ -372,17 +390,17 @@ func TestV1TimeShareStock(t *testing.T) {
 
 // 验证扩展行情分时输出点与昨收。
 func TestV1TimeShareEx(t *testing.T) {
-	originalTick := v1FetchExHistoryTick
-	originalK := fetchExKLinePage
+	originalTick := domain.FetchExHistoryTick
+	originalK := domain.FetchExKLinePage
 	t.Cleanup(func() {
-		v1FetchExHistoryTick = originalTick
-		fetchExKLinePage = originalK
+		domain.FetchExHistoryTick = originalTick
+		domain.FetchExKLinePage = originalK
 	})
 	loc := time.FixedZone("CST", 8*60*60)
-	v1FetchExHistoryTick = func(date uint32, category uint8, code string) ([]proto.ExTickChartData, error) {
+	domain.FetchExHistoryTick = func(date uint32, category uint8, code string) ([]proto.ExTickChartData, error) {
 		return []proto.ExTickChartData{{Time: "09:31", Price: 10.5, Avg: 10.5, Vol: 100}}, nil
 	}
-	fetchExKLinePage = func(category uint8, code string, period uint16, start uint32, count uint16, times uint16) ([]proto.ExKLineItem, error) {
+	domain.FetchExKLinePage = func(category uint8, code string, period uint16, start uint32, count uint16, times uint16) ([]proto.ExKLineItem, error) {
 		return []proto.ExKLineItem{{DateTime: time.Date(2026, 7, 24, 15, 0, 0, 0, loc), PreClose: 10.4}}, nil
 	}
 
@@ -411,9 +429,9 @@ func TestV1TimeShareEx(t *testing.T) {
 
 // 验证扩展行情分时无数据时返回 INSTRUMENT_NOT_FOUND。
 func TestV1TimeShareExNoData(t *testing.T) {
-	originalTick := v1FetchExHistoryTick
-	t.Cleanup(func() { v1FetchExHistoryTick = originalTick })
-	v1FetchExHistoryTick = func(uint32, uint8, string) ([]proto.ExTickChartData, error) {
+	originalTick := domain.FetchExHistoryTick
+	t.Cleanup(func() { domain.FetchExHistoryTick = originalTick })
+	domain.FetchExHistoryTick = func(uint32, uint8, string) ([]proto.ExTickChartData, error) {
 		return []proto.ExTickChartData{{Time: "09:31", Price: 0, Avg: 0, Vol: 0}}, nil
 	}
 
