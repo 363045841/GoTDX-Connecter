@@ -1,5 +1,5 @@
 // 本文件测试服务存活与就绪健康检查接口的状态响应。
-package api
+package server
 
 import (
 	"net/http"

@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"KlineChartQuantGo/services/tdx-api/internal/api"
 	"KlineChartQuantGo/services/tdx-api/internal/client"
+	"KlineChartQuantGo/services/tdx-api/internal/server"
 	"github.com/gin-gonic/gin"
 )
 
@@ -27,7 +27,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("unable to start gotdx heartbeat: %v", err)
 	}
-	router := api.NewRouter()
+	router := server.NewRouter()
 	addr := fmt.Sprintf(":%s", port)
 	server := &http.Server{Addr: addr, Handler: router}
 	serverErrors := make(chan error, 1)

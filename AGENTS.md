@@ -22,7 +22,7 @@ go run . binance
 
 | Service | Path | Port | Role |
 |---|---|---|---|
-| tdx-api | `./services/tdx-api` | `8080` | gotdx stock/ex/mac/host APIs |
+| tdx-api | `./services/tdx-api` | `8080` | gotdx V1 market-data API（A股/指数/扩展行情） |
 | binance-api | `./services/binance-api` | `8081` | Binance orderbook + depth SSE |
 
 BaoStock lives in a **separate** repo (`stockbao`, port 8000). Do not add it here.
@@ -30,12 +30,13 @@ BaoStock lives in a **separate** repo (`stockbao`, port 8000). Do not add it her
 ## Key facts
 
 - **One module**: root `go.mod` → `module KlineChartQuantGo`. No nested `go.mod` under services.
-- **Go 1.26**, Gin framework, SQLite symbol directory persistence with startup warm-up, API package tests, no CI.
+- **Go 1.26**, Gin framework, SQLite symbol directory persistence with startup warm-up, per-package tests, no CI.
 - Import paths: `KlineChartQuantGo/services/tdx-api/internal/...` and `KlineChartQuantGo/services/binance-api/internal/...`
-- tdx-api client singleton via `client.Get()` — probes TDX hosts (2s timeout) at startup.
+- tdx-api client singleton via `client.DefaultManager()` — probes gotdx hosts at startup.
 - binance-api defaults proxy to `http://127.0.0.1:6666` if `HTTP_PROXY` unset.
 - CORS wide-open on both services.
 - Binance routes are `/api/binance/*` (not the old misspelled `/api/biance/*`).
+- tdx-api 只有 V1 行情协议 + 健康检查，旧 `/api/stock|ex|mac|hosts` 接口已删除。
 
 ## Env vars
 
@@ -63,8 +64,11 @@ main.go                — launcher: go run . <tdx|binance>
 services/
   tdx-api/
     main.go
-    internal/client/   — gotdx singleton (probe, connect, reconnect)
-    internal/api/      — handlers + router + middleware
+    internal/client/     — gotdx singleton (probe, connect, reconnect, heartbeat)
+    internal/directory/  — 证券目录：加载/缓存/SQLite 持久化/搜索
+    internal/domain/     — 领域层：K线分页、分时构建、昨收解析、kind 路由
+    internal/v1/         — V1 行情协议：envelope、探测、搜索、bars/timeshare
+    internal/server/     — HTTP 装配：健康检查 + 目录缓存 + V1 路由
   binance-api/
     main.go
     internal/binance/  — WS client + DepthHub
@@ -72,10 +76,9 @@ services/
 ```
 
 ## Conventions
-- Error responses: `{"error": "..."}` with appropriate HTTP status.
-- K-line page size: `klinePageSize = 798` (`services/tdx-api/internal/api/stock.go`).
-- `client.Reprobe()` reconnects if hosts change at runtime.
-- Frontend caller: `KLineChartQuant` packages/core/src/data/{gotdx,binance}.ts
+- V1 错误响应统一 envelope：`{"error": {"code", "message"}, "requestId"}`；确定性错误码见 `internal/v1`。
+- K-line page size: `klinePageSize = 798` (`services/tdx-api/internal/domain/kline_range.go`).
+- 前端只走 V1 协议：`KLineChartQuant` packages/core/src/data/provider/sources/gotdx.ts
 
 ## Comment Style
 
