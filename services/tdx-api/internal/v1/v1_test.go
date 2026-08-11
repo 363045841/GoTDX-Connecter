@@ -388,6 +388,26 @@ func TestV1BarsNoDataReturnsInstrumentNotFound(t *testing.T) {
 	}
 }
 
+// 验证已有 K 线后的游标耗尽是成功空页，不会被前端误判为加载失败。
+func TestV1BarsCursorExhaustedReturnsSuccess(t *testing.T) {
+	original := domain.FetchStockKLinePage
+	t.Cleanup(func() { domain.FetchStockKLinePage = original })
+	domain.FetchStockKLinePage = func(uint16, uint8, string, uint16, uint16, uint16, uint16) ([]proto.SecurityBar, error) {
+		return nil, nil
+	}
+
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"period":"daily","adjustment":"none","limit":1,"before":1}`)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.Code, resp.Body.String())
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"olderData":"exhausted"`)) {
+		t.Fatalf("response = %s, want exhausted cursor page", resp.Body.String())
+	}
+}
+
 // 验证扩展行情请求不支持的复权方式时返回 UNSUPPORTED_CAPABILITY。
 func TestV1BarsRejectsUnsupportedAdjustment(t *testing.T) {
 	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })

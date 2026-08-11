@@ -38,6 +38,15 @@ type v1BarSeries struct {
 	Timezone     string        `json:"timezone"`
 	VolumeUnit   string        `json:"volumeUnit,omitempty"`
 	Items        []v1KLineItem `json:"items"`
+	OlderData    string        `json:"olderData"`
+}
+
+// v1OlderData 返回可证明的历史状态；无法确认时保持 unknown，禁止前端自行推断。
+func v1OlderData(itemCount, limit int) string {
+	if itemCount < limit {
+		return "exhausted"
+	}
+	return "unknown"
 }
 
 // handleV1Bars 拉取指定品种、周期和 cursor 页的 K 线。
@@ -86,6 +95,9 @@ func handleV1Bars(c *gin.Context) {
 		}
 		bars, err := domain.IndexKLineBefore(category, uint8(market), req.Instrument.Symbol, req.Limit, before)
 		if err != nil {
+			if req.Before != nil && errors.Is(err, domain.ErrNoKLineData) {
+				break
+			}
 			writeV1BarsError(c, err)
 			return
 		}
@@ -100,6 +112,9 @@ func handleV1Bars(c *gin.Context) {
 		}
 		bars, err := domain.ExKLineBefore(uint8(cat), req.Instrument.Symbol, category, 1, req.Limit, before)
 		if err != nil {
+			if req.Before != nil && errors.Is(err, domain.ErrNoKLineData) {
+				break
+			}
 			writeV1BarsError(c, err)
 			return
 		}
@@ -114,6 +129,9 @@ func handleV1Bars(c *gin.Context) {
 		}
 		bars, err := domain.StockKLineBefore(category, uint8(market), req.Instrument.Symbol, 1, adjust, req.Limit, before)
 		if err != nil {
+			if req.Before != nil && errors.Is(err, domain.ErrNoKLineData) {
+				break
+			}
 			writeV1BarsError(c, err)
 			return
 		}
@@ -128,5 +146,6 @@ func handleV1Bars(c *gin.Context) {
 		Adjustment:   req.Adjustment,
 		Timezone:     timezone,
 		Items:        items,
+		OlderData:    v1OlderData(len(items), req.Limit),
 	})
 }
