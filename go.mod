@@ -3,7 +3,7 @@ module KlineChartQuantGo
 go 1.26.0
 
 require (
-	github.com/bensema/gotdx v0.0.0-20260725131351-83d85679ecdc
+	github.com/bensema/gotdx v0.0.0-20260810132116-924c7313bc40
 	github.com/gin-gonic/gin v1.12.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
@@ -48,5 +48,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/bensema/gotdx => github.com/363045841/gotdx v0.0.0-20260728081459-7720beaca07c
