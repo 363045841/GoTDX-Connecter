@@ -29,7 +29,7 @@
 
 - `GET  /sources/:sourceId/probe` — 数据源探测
 - `POST /instruments/search` — 品种目录搜索
-- `POST /bars` — K 线（UTC 毫秒区间）
+- `POST /bars` — K 线（`limit` + 可选排他 `before` UTC 毫秒 cursor）
 - `POST /timeshare` — 分时（交易日 YYYY-MM-DD）
 
 ## 错误码

@@ -58,6 +58,54 @@ func paginateFromRecent[T any](
 	return out, nil
 }
 
+// paginateBefore 从最近向历史分页，直到取得足够多的 cursor 之前数据。
+func paginateBefore[T any](
+	pageSize uint16,
+	limit int,
+	before *time.Time,
+	fetch func(start uint32, count uint16) ([]T, error),
+	timestamp func(item T) (time.Time, bool),
+	toleratePartial bool,
+) ([]T, error) {
+	count := uint16(limit)
+	if count > pageSize {
+		count = pageSize
+	}
+	out := make([]T, 0, limit)
+	for pageNum, start := 0, uint32(0); ; pageNum++ {
+		if pageNum >= maxKLinePages {
+			log.Printf("[gotdx] kline cursor pagination aborted after %d pages (safety cap)", pageNum)
+			break
+		}
+		page, err := fetch(start, count)
+		if err != nil {
+			if toleratePartial && len(out) > 0 {
+				log.Printf("[gotdx] kline cursor page stop at start=%d after %d bars: %v", start, len(out), err)
+				break
+			}
+			return nil, err
+		}
+		if len(page) == 0 {
+			break
+		}
+		out = append(out, page...)
+		if before == nil {
+			break
+		}
+		older := 0
+		for _, item := range out {
+			if at, ok := timestamp(item); ok && at.Before(*before) {
+				older++
+			}
+		}
+		if older >= limit {
+			break
+		}
+		start += uint32(len(page))
+	}
+	return out, nil
+}
+
 // clampUint16Start 主站协议 start 为 uint16；超出则视为无更多历史
 func clampUint16Start(start uint32) (uint16, bool) {
 	if start > 0xffff {
@@ -123,4 +171,48 @@ func filterExKLineByDate(klines []proto.ExKLineItem, startDate, endDate time.Tim
 		return out[i].DateTime.Before(out[j].DateTime)
 	})
 	return out
+}
+
+// limitSecurityBarsBefore 严格按 cursor 过滤股票或指数 K 线，并保留最新 limit 条升序数据。
+func limitSecurityBarsBefore(klines []proto.SecurityBar, before *time.Time, limit int) []proto.SecurityBar {
+	filtered := make([]proto.SecurityBar, 0, len(klines))
+	seen := make(map[int64]bool)
+	for _, k := range klines {
+		if k.DateTime.IsZero() || (before != nil && !k.DateTime.Before(*before)) {
+			continue
+		}
+		key := k.DateTime.UnixNano()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		filtered = append(filtered, k)
+	}
+	sort.Slice(filtered, func(i, j int) bool { return filtered[i].DateTime.Before(filtered[j].DateTime) })
+	if len(filtered) > limit {
+		filtered = filtered[len(filtered)-limit:]
+	}
+	return filtered
+}
+
+// limitExKLinesBefore 严格按 cursor 过滤扩展行情 K 线，并保留最新 limit 条升序数据。
+func limitExKLinesBefore(klines []proto.ExKLineItem, before *time.Time, limit int) []proto.ExKLineItem {
+	filtered := make([]proto.ExKLineItem, 0, len(klines))
+	seen := make(map[int64]bool)
+	for _, k := range klines {
+		if k.DateTime.IsZero() || (before != nil && !k.DateTime.Before(*before)) {
+			continue
+		}
+		key := k.DateTime.UnixNano()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		filtered = append(filtered, k)
+	}
+	sort.Slice(filtered, func(i, j int) bool { return filtered[i].DateTime.Before(filtered[j].DateTime) })
+	if len(filtered) > limit {
+		filtered = filtered[len(filtered)-limit:]
+	}
+	return filtered
 }

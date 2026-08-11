@@ -239,6 +239,35 @@ func TestStockKLineRangeUsesPaginate(t *testing.T) {
 	}
 }
 
+// 验证 cursor 查询严格排除游标，并从较新页中选择最新 limit 条后按时间升序返回。
+func TestStockKLineBeforeUsesExclusiveCursorAndAscendingOrder(t *testing.T) {
+	prev := FetchStockKLinePage
+	t.Cleanup(func() { FetchStockKLinePage = prev })
+	loc := time.Local
+	newest := time.Date(2024, 1, 4, 15, 0, 0, 0, loc)
+	cursor := time.Date(2024, 1, 3, 15, 0, 0, 0, loc)
+	older := time.Date(2024, 1, 2, 15, 0, 0, 0, loc)
+	oldest := time.Date(2024, 1, 1, 15, 0, 0, 0, loc)
+	FetchStockKLinePage = func(category uint16, market uint8, code string, start, count uint16, times, adjust uint16) ([]proto.SecurityBar, error) {
+		switch start {
+		case 0:
+			return []proto.SecurityBar{{DateTime: newest}, {DateTime: cursor}}, nil
+		case 2:
+			return []proto.SecurityBar{{DateTime: older}, {DateTime: oldest}}, nil
+		default:
+			return nil, nil
+		}
+	}
+
+	got, err := StockKLineBefore(4, 1, "600000", 1, 0, 2, &cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || !got[0].DateTime.Equal(oldest) || !got[1].DateTime.Equal(older) {
+		t.Fatalf("bars = %#v, want oldest then older", got)
+	}
+}
+
 // 验证无数据品种（如已到期期货）返回确定性错误而非空序列，供 V1 层映射为可流转错误码。
 func TestStockKLineRangeReturnsErrNoKLineData(t *testing.T) {
 	prev := FetchStockKLinePage

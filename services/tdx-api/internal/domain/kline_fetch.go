@@ -142,6 +142,24 @@ func StockKLineRange(category uint16, market uint8, code string, times uint16, a
 	return filterKLineByDate(raw, startDate, endDate, true), nil
 }
 
+// StockKLineBefore 按 cursor 拉取股票 K 线，返回严格早于 before 的最新 limit 条升序数据。
+func StockKLineBefore(category uint16, market uint8, code string, times uint16, adjust uint16, limit int, before *time.Time) ([]proto.SecurityBar, error) {
+	raw, err := paginateBefore(klinePageSize, limit, before, func(start uint32, count uint16) ([]proto.SecurityBar, error) {
+		s, ok := clampUint16Start(start)
+		if !ok {
+			return nil, nil
+		}
+		return FetchStockKLinePage(category, market, code, s, count, times, adjust)
+	}, securityBarOldest, false)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, ErrNoKLineData
+	}
+	return limitSecurityBarsBefore(raw, before, limit), nil
+}
+
 // IndexKLineRange 按 GetIndexBars 分页拉取指数 K 线并按日期过滤
 // 深页偶发 gotdx invalid kline datetime：先缩 count 再试，仍失败且已有数据则截断
 func IndexKLineRange(category uint16, market uint8, code string, startDate, endDate time.Time) ([]proto.SecurityBar, error) {
@@ -165,6 +183,28 @@ func IndexKLineRange(category uint16, market uint8, code string, startDate, endD
 	return filterKLineByDate(raw, startDate, endDate, true), nil
 }
 
+// IndexKLineBefore 按 cursor 拉取指数 K 线，返回严格早于 before 的最新 limit 条升序数据。
+func IndexKLineBefore(category uint16, market uint8, code string, limit int, before *time.Time) ([]proto.SecurityBar, error) {
+	raw, err := paginateBefore(indexPageSize, limit, before, func(start uint32, count uint16) ([]proto.SecurityBar, error) {
+		s, ok := clampUint16Start(start)
+		if !ok {
+			return nil, nil
+		}
+		klines, err := FetchIndexBarsPage(category, market, code, s, count)
+		if err != nil && count > indexFallbackPageSize {
+			return FetchIndexBarsPage(category, market, code, s, indexFallbackPageSize)
+		}
+		return klines, err
+	}, securityBarOldest, true)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, ErrNoKLineData
+	}
+	return limitSecurityBarsBefore(raw, before, limit), nil
+}
+
 // ExKLineRange 按 ExKLine 分页拉取扩展行情并按日期过滤
 func ExKLineRange(category uint8, code string, period uint16, times uint16, startDate, endDate time.Time) ([]proto.ExKLineItem, error) {
 	raw, err := paginateFromRecent(klinePageSize, func(start uint32, count uint16) ([]proto.ExKLineItem, error) {
@@ -177,4 +217,18 @@ func ExKLineRange(category uint8, code string, period uint16, times uint16, star
 		return nil, ErrNoKLineData
 	}
 	return filterExKLineByDate(raw, startDate, endDate), nil
+}
+
+// ExKLineBefore 按 cursor 拉取扩展行情 K 线，返回严格早于 before 的最新 limit 条升序数据。
+func ExKLineBefore(category uint8, code string, period uint16, times uint16, limit int, before *time.Time) ([]proto.ExKLineItem, error) {
+	raw, err := paginateBefore(klinePageSize, limit, before, func(start uint32, count uint16) ([]proto.ExKLineItem, error) {
+		return FetchExKLinePage(category, code, period, start, count, times)
+	}, exKLineOldest, false)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, ErrNoKLineData
+	}
+	return limitExKLinesBefore(raw, before, limit), nil
 }

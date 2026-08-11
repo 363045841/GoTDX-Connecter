@@ -20,14 +20,14 @@ func writeV1BarsError(c *gin.Context, err error) {
 	writeV1Error(c, http.StatusBadGateway, v1CodeUpstreamUnavailable, err.Error())
 }
 
-// v1BarRequest V1 K 线请求；from/to 为 UTC Unix 毫秒时间戳，含边界。
+// v1BarRequest V1 K 线请求；before 为可选 UTC Unix 毫秒排他游标。
 type v1BarRequest struct {
 	SourceID   string                `json:"sourceId"`
 	Instrument v1InstrumentReference `json:"instrument"`
 	Period     string                `json:"period"`
 	Adjustment string                `json:"adjustment"`
-	From       int64                 `json:"from"`
-	To         int64                 `json:"to"`
+	Limit      int                   `json:"limit"`
+	Before     *int64                `json:"before,omitempty"`
 }
 
 // v1BarSeries V1 K 线序列。
@@ -40,23 +40,7 @@ type v1BarSeries struct {
 	Items        []v1KLineItem `json:"items"`
 }
 
-// v1RangeToDates 将 UTC 毫秒区间转换为品种时区的日期边界（含整天）。
-func v1RangeToDates(from, to int64, timezone string) (time.Time, time.Time, error) {
-	loc, err := time.LoadLocation(timezone)
-	if err != nil {
-		loc = time.FixedZone("CST", 8*60*60)
-	}
-	start := time.UnixMilli(from).In(loc)
-	end := time.UnixMilli(to).In(loc)
-	if !end.After(start) {
-		return time.Time{}, time.Time{}, errors.New("to must be after from")
-	}
-	startDate := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, loc)
-	endDate := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, loc)
-	return startDate, endDate, nil
-}
-
-// handleV1Bars 拉取指定品种、周期和 UTC 区间的 K 线。
+// handleV1Bars 拉取指定品种、周期和 cursor 页的 K 线。
 func handleV1Bars(c *gin.Context) {
 	var req v1BarRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -67,11 +51,15 @@ func handleV1Bars(c *gin.Context) {
 		writeV1Error(c, http.StatusBadRequest, v1CodeInvalidRequest, "instrument.symbol is required")
 		return
 	}
-	timezone := v1ExchangeToTimezone(req.Instrument.Exchange)
-	startDate, endDate, err := v1RangeToDates(req.From, req.To, timezone)
-	if err != nil {
-		writeV1Error(c, http.StatusBadRequest, v1CodeInvalidRequest, err.Error())
+	if req.Limit < 1 || req.Limit > 798 {
+		writeV1Error(c, http.StatusBadRequest, v1CodeInvalidRequest, "limit must be between 1 and 798")
 		return
+	}
+	timezone := v1ExchangeToTimezone(req.Instrument.Exchange)
+	var before *time.Time
+	if req.Before != nil {
+		cursor := time.UnixMilli(*req.Before).UTC()
+		before = &cursor
 	}
 	ref := req.Instrument.ProviderRef
 	kind := v1ProviderRefKind(ref)
@@ -96,7 +84,7 @@ func handleV1Bars(c *gin.Context) {
 			writeV1Error(c, http.StatusBadRequest, v1CodeInvalidRequest, "providerRef.market is required for index")
 			return
 		}
-		bars, err := domain.IndexKLineRange(category, uint8(market), req.Instrument.Symbol, startDate, endDate)
+		bars, err := domain.IndexKLineBefore(category, uint8(market), req.Instrument.Symbol, req.Limit, before)
 		if err != nil {
 			writeV1BarsError(c, err)
 			return
@@ -110,7 +98,7 @@ func handleV1Bars(c *gin.Context) {
 			writeV1Error(c, http.StatusBadRequest, v1CodeInvalidRequest, "providerRef.category is required for ex")
 			return
 		}
-		bars, err := domain.ExKLineRange(uint8(cat), req.Instrument.Symbol, category, 1, startDate, endDate)
+		bars, err := domain.ExKLineBefore(uint8(cat), req.Instrument.Symbol, category, 1, req.Limit, before)
 		if err != nil {
 			writeV1BarsError(c, err)
 			return
@@ -124,7 +112,7 @@ func handleV1Bars(c *gin.Context) {
 			writeV1Error(c, http.StatusBadRequest, v1CodeInvalidRequest, "providerRef.market is required")
 			return
 		}
-		bars, err := domain.StockKLineRange(category, uint8(market), req.Instrument.Symbol, 1, adjust, startDate, endDate)
+		bars, err := domain.StockKLineBefore(category, uint8(market), req.Instrument.Symbol, 1, adjust, req.Limit, before)
 		if err != nil {
 			writeV1BarsError(c, err)
 			return

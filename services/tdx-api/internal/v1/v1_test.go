@@ -152,13 +152,13 @@ func TestV1SearchMapsInstruments(t *testing.T) {
 	var body struct {
 		Data struct {
 			Items []struct {
-				ID         string `json:"id"`
-				SourceID   string `json:"sourceId"`
-				Symbol     string `json:"symbol"`
-				Name       string `json:"name"`
-				AssetClass string `json:"assetClass"`
-				Exchange   string `json:"exchange"`
-				SessionID  string `json:"sessionId"`
+				ID           string `json:"id"`
+				SourceID     string `json:"sourceId"`
+				Symbol       string `json:"symbol"`
+				Name         string `json:"name"`
+				AssetClass   string `json:"assetClass"`
+				Exchange     string `json:"exchange"`
+				SessionID    string `json:"sessionId"`
 				Capabilities struct {
 					Bars struct {
 						Periods     []string `json:"periods"`
@@ -216,11 +216,9 @@ func TestV1BarsStock(t *testing.T) {
 		return []proto.SecurityBar{{DateTime: day, Open: 10, High: 11, Low: 9, Close: 10.5, Vol: 1000, Amount: 500000, RisePrice: 0.5, RiseRate: 5}}, nil
 	}
 
-	from := time.Date(2026, 7, 24, 0, 0, 0, 0, loc).UnixMilli()
-	to := time.Date(2026, 7, 25, 0, 0, 0, 0, loc).UnixMilli()
 	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
 	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
-		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"period":"daily","adjustment":"qfq","from":`+strconv.FormatInt(from, 10)+`,"to":`+strconv.FormatInt(to, 10)+`}`)
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"period":"daily","adjustment":"qfq","limit":1}`)
 
 	var body struct {
 		Data struct {
@@ -254,6 +252,45 @@ func TestV1BarsStock(t *testing.T) {
 	}
 }
 
+// 验证 before 为排他 UTC 毫秒游标，返回最新匹配页且条目保持时间升序。
+func TestV1BarsStockBeforeCursor(t *testing.T) {
+	original := domain.FetchStockKLinePage
+	t.Cleanup(func() { domain.FetchStockKLinePage = original })
+	loc := time.FixedZone("CST", 8*60*60)
+	newest := time.Date(2026, 7, 26, 15, 0, 0, 0, loc)
+	cursor := time.Date(2026, 7, 25, 15, 0, 0, 0, loc)
+	older := time.Date(2026, 7, 24, 15, 0, 0, 0, loc)
+	oldest := time.Date(2026, 7, 23, 15, 0, 0, 0, loc)
+	domain.FetchStockKLinePage = func(category uint16, market uint8, code string, start, count uint16, times, adjust uint16) ([]proto.SecurityBar, error) {
+		switch start {
+		case 0:
+			return []proto.SecurityBar{{DateTime: newest}, {DateTime: cursor}}, nil
+		case 2:
+			return []proto.SecurityBar{{DateTime: older}, {DateTime: oldest}}, nil
+		default:
+			return nil, nil
+		}
+	}
+
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"period":"daily","adjustment":"none","limit":2,"before":`+strconv.FormatInt(cursor.UnixMilli(), 10)+`}`)
+
+	var body struct {
+		Data struct {
+			Items []struct {
+				Timestamp int64 `json:"timestamp"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, resp.Body.String())
+	}
+	if len(body.Data.Items) != 2 || body.Data.Items[0].Timestamp != oldest.UnixMilli() || body.Data.Items[1].Timestamp != older.UnixMilli() {
+		t.Fatalf("items = %#v, want oldest then older", body.Data.Items)
+	}
+}
+
 // 验证指数 K 线请求按 kind=index 路由到指数接口。
 func TestV1BarsIndex(t *testing.T) {
 	original := domain.FetchIndexBarsPage
@@ -271,11 +308,9 @@ func TestV1BarsIndex(t *testing.T) {
 		return []proto.SecurityBar{{DateTime: day, Open: 3500, High: 3510, Low: 3490, Close: 3505, Vol: 1}}, nil
 	}
 
-	from := time.Date(2026, 7, 24, 0, 0, 0, 0, loc).UnixMilli()
-	to := time.Date(2026, 7, 25, 0, 0, 0, 0, loc).UnixMilli()
 	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
 	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
-		`{"sourceId":"gotdx","instrument":{"id":"gotdx:index:1:000001","symbol":"000001","exchange":"SH","providerRef":{"market":1,"kind":"index"}},"period":"daily","adjustment":"none","from":`+strconv.FormatInt(from, 10)+`,"to":`+strconv.FormatInt(to, 10)+`}`)
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:index:1:000001","symbol":"000001","exchange":"SH","providerRef":{"market":1,"kind":"index"}},"period":"daily","adjustment":"none","limit":1}`)
 
 	if !bytes.Contains(resp.Body.Bytes(), []byte(`"close":3505`)) {
 		t.Fatalf("response = %s, want index close 3505", resp.Body.String())
@@ -299,11 +334,9 @@ func TestV1BarsEx(t *testing.T) {
 		return []proto.ExKLineItem{{DateTime: day, Open: 18000, High: 18100, Low: 17900, Close: 18050, Vol: 100, Amount: 200000}}, nil
 	}
 
-	from := time.Date(2026, 7, 24, 0, 0, 0, 0, loc).UnixMilli()
-	to := time.Date(2026, 7, 25, 0, 0, 0, 0, loc).UnixMilli()
 	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
 	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
-		`{"sourceId":"gotdx","instrument":{"id":"gotdx:ex:31:HSI","symbol":"HSI","exchange":"HK","providerRef":{"category":31,"kind":"ex"}},"period":"daily","adjustment":"none","from":`+strconv.FormatInt(from, 10)+`,"to":`+strconv.FormatInt(to, 10)+`}`)
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:ex:31:HSI","symbol":"HSI","exchange":"HK","providerRef":{"category":31,"kind":"ex"}},"period":"daily","adjustment":"none","limit":1}`)
 
 	if !bytes.Contains(resp.Body.Bytes(), []byte(`"close":18050`)) {
 		t.Fatalf("response = %s, want ex close 18050", resp.Body.String())
@@ -317,7 +350,7 @@ func TestV1BarsEx(t *testing.T) {
 func TestV1BarsRejectsMissingMarket(t *testing.T) {
 	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
 	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
-		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"kind":"stock"}},"period":"daily","adjustment":"none","from":1,"to":2}`)
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"kind":"stock"}},"period":"daily","adjustment":"none","limit":1}`)
 
 	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"INVALID_REQUEST"`)) {
 		t.Fatalf("response = %s, want INVALID_REQUEST", resp.Body.String())
@@ -328,7 +361,7 @@ func TestV1BarsRejectsMissingMarket(t *testing.T) {
 func TestV1BarsRejectsUnknownPeriod(t *testing.T) {
 	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
 	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
-		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"period":"2min","adjustment":"none","from":1,"to":2}`)
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"period":"2min","adjustment":"none","limit":1}`)
 
 	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"UNSUPPORTED_CAPABILITY"`)) {
 		t.Fatalf("response = %s, want UNSUPPORTED_CAPABILITY", resp.Body.String())
@@ -345,7 +378,7 @@ func TestV1BarsNoDataReturnsInstrumentNotFound(t *testing.T) {
 
 	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
 	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
-		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"period":"daily","adjustment":"none","from":1,"to":2}`)
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"period":"daily","adjustment":"none","limit":1}`)
 
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404: %s", resp.Code, resp.Body.String())
@@ -359,10 +392,22 @@ func TestV1BarsNoDataReturnsInstrumentNotFound(t *testing.T) {
 func TestV1BarsRejectsUnsupportedAdjustment(t *testing.T) {
 	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
 	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
-		`{"sourceId":"gotdx","instrument":{"id":"gotdx:ex:31:HSI","symbol":"HSI","exchange":"HK","providerRef":{"category":31,"kind":"ex"}},"period":"daily","adjustment":"qfq","from":1,"to":2}`)
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:ex:31:HSI","symbol":"HSI","exchange":"HK","providerRef":{"category":31,"kind":"ex"}},"period":"daily","adjustment":"qfq","limit":1}`)
 
 	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"UNSUPPORTED_CAPABILITY"`)) {
 		t.Fatalf("response = %s, want UNSUPPORTED_CAPABILITY", resp.Body.String())
+	}
+}
+
+// 验证 bars limit 缺失、非正数或超过上游单页上限时返回 INVALID_REQUEST。
+func TestV1BarsRejectsInvalidLimit(t *testing.T) {
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	for _, limit := range []string{"", `,"limit":0`, `,"limit":799`} {
+		resp := v1Request(router, http.MethodPost, "/api/v1/market-data/bars",
+			`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"period":"daily","adjustment":"none"`+limit+`}`)
+		if resp.Code != http.StatusBadRequest || !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"INVALID_REQUEST"`)) {
+			t.Fatalf("limit suffix %q response = %d %s, want INVALID_REQUEST", limit, resp.Code, resp.Body.String())
+		}
 	}
 }
 
@@ -393,9 +438,9 @@ func TestV1TimeShareStock(t *testing.T) {
 
 	var body struct {
 		Data struct {
-			InstrumentID string `json:"instrumentId"`
-			TradingDate  string `json:"tradingDate"`
-			Timezone     string `json:"timezone"`
+			InstrumentID string  `json:"instrumentId"`
+			TradingDate  string  `json:"tradingDate"`
+			Timezone     string  `json:"timezone"`
 			PreClose     float64 `json:"preClose"`
 			Items        []struct {
 				Timestamp int64   `json:"timestamp"`
