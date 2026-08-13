@@ -1,4 +1,4 @@
-# KlineChartQuantGo
+# GoTDX-Connecter
 
 多数据源行情代理 — 单一 Go module，为 [KLineChartQuant](https://github.com/363045841/KLineChartQuant) 提供本地后端。
 
