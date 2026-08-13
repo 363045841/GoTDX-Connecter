@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bensema/gotdx"
+	gotdxtypes "github.com/bensema/gotdx/types"
 )
 
 type Domain string
@@ -252,6 +253,10 @@ func executeOnce[T any](manager *Manager, domain Domain, operation func(*gotdx.C
 func isRecoverable(err error) bool {
 	if err == nil {
 		return false
+	}
+	// gotdx 在协议帧异常后无法保证连接仍处于帧边界，必须废弃连接并重连。
+	if errors.Is(err, gotdxtypes.ErrBadData) {
+		return true
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
 		return true

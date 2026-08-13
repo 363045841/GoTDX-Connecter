@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bensema/gotdx"
+	gotdxtypes "github.com/bensema/gotdx/types"
 )
 
 // testManager 创建可统计客户端构建次数的测试管理器。
@@ -198,6 +199,25 @@ func TestExecuteDoesNotRetryProtocolDataFailure(t *testing.T) {
 	}
 	if calls != 1 || builds[DomainMain].Load() != 1 {
 		t.Fatalf("calls=%d builds=%d, want 1 and 1", calls, builds[DomainMain].Load())
+	}
+}
+
+// 验证 gotdx 协议帧异常会重建客户端，避免复用已失去帧边界的连接。
+func TestExecuteRetriesBadDataAfterReconnect(t *testing.T) {
+	manager, builds := testManager(t, DomainMain)
+	var calls int
+	result, err := execute(manager, DomainMain, func(*gotdx.Client) (string, error) {
+		calls++
+		if calls == 1 {
+			return "", gotdxtypes.ErrBadData
+		}
+		return "ok", nil
+	})
+	if err != nil || result != "ok" {
+		t.Fatalf("execute result=%q err=%v", result, err)
+	}
+	if calls != 2 || builds[DomainMain].Load() != 2 {
+		t.Fatalf("calls=%d builds=%d, want 2 and 2", calls, builds[DomainMain].Load())
 	}
 }
 
