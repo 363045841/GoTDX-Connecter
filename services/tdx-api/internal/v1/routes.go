@@ -98,6 +98,7 @@ func RegisterRoutes(r *gin.Engine, symbolCache *directory.Cache, status func() c
 		v1.POST("/instruments/search", handleV1Search(symbolCache))
 		v1.POST("/bars", handleV1Bars)
 		v1.POST("/timeshare", handleV1Timeshare)
+		v1.POST("/timeshare/range", handleV1TimeShareRange)
 	}
 }
 

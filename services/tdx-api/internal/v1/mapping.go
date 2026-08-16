@@ -41,9 +41,15 @@ type v1BarCapability struct {
 
 // v1InstrumentCapabilities V1 品种可启用的行情能力。
 type v1InstrumentCapabilities struct {
-	Bars      *v1BarCapability `json:"bars,omitempty"`
-	TimeShare *bool            `json:"timeShare,omitempty"`
-	Depth     *bool            `json:"depth,omitempty"`
+	Bars           *v1BarCapability            `json:"bars,omitempty"`
+	TimeShare      *bool                       `json:"timeShare,omitempty"`
+	TimeShareRange *v1TimeShareRangeCapability `json:"timeShareRange,omitempty"`
+	Depth          *bool                       `json:"depth,omitempty"`
+}
+
+// v1TimeShareRangeCapability 声明多日分时接口可一次查询的交易日上限。
+type v1TimeShareRangeCapability struct {
+	MaxTradingDays int `json:"maxTradingDays"`
 }
 
 // v1HistoryCoverage V1 数据源历史数据粗粒度覆盖区间，UTC Unix 毫秒。
@@ -54,11 +60,12 @@ type v1HistoryCoverage struct {
 
 // v1SourceCapabilities V1 源级能力声明，前端流转层据此筛选候选源。
 type v1SourceCapabilities struct {
-	AssetClasses    []string            `json:"assetClasses"`
-	Bars            *v1BarCapability    `json:"bars,omitempty"`
-	TimeShare       *bool               `json:"timeShare,omitempty"`
-	Depth           *bool               `json:"depth,omitempty"`
-	HistoryCoverage *v1HistoryCoverage  `json:"historyCoverage,omitempty"`
+	AssetClasses    []string                    `json:"assetClasses"`
+	Bars            *v1BarCapability            `json:"bars,omitempty"`
+	TimeShare       *bool                       `json:"timeShare,omitempty"`
+	TimeShareRange  *v1TimeShareRangeCapability `json:"timeShareRange,omitempty"`
+	Depth           *bool                       `json:"depth,omitempty"`
+	HistoryCoverage *v1HistoryCoverage          `json:"historyCoverage,omitempty"`
 }
 
 // v1SourceCapabilitiesFor 构建 gotdx 源级能力声明。
@@ -74,8 +81,9 @@ func v1SourceCapabilitiesFor() v1SourceCapabilities {
 			Periods:     append([]string(nil), v1KLinePeriods...),
 			Adjustments: []string{"qfq", "hfq", "none"},
 		},
-		TimeShare: &timeShare,
-		Depth:     &depth,
+		TimeShare:      &timeShare,
+		TimeShareRange: &v1TimeShareRangeCapability{MaxTradingDays: v1MaxTimeShareRangeDays},
+		Depth:          &depth,
 		HistoryCoverage: &v1HistoryCoverage{
 			To: now,
 		},
@@ -95,7 +103,8 @@ func v1InstrumentCapabilitiesFor(kind string) v1InstrumentCapabilities {
 			Periods:     append([]string(nil), v1KLinePeriods...),
 			Adjustments: adjustments,
 		},
-		TimeShare: &timeShare,
+		TimeShare:      &timeShare,
+		TimeShareRange: &v1TimeShareRangeCapability{MaxTradingDays: v1MaxTimeShareRangeDays},
 	}
 }
 

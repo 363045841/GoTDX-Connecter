@@ -31,6 +31,7 @@
 - `POST /instruments/search` — 品种目录搜索
 - `POST /bars` — K 线（`limit` + 可选排他 `before` UTC 毫秒 cursor）
 - `POST /timeshare` — 分时（交易日 YYYY-MM-DD）
+- `POST /timeshare/range` — 多日分时（`endTradingDate` + `days` 个实际交易日，最大值由 `timeShareRange.maxTradingDays` 声明）
 
 ## 错误码
 

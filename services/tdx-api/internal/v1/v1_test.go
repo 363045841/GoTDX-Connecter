@@ -69,8 +69,11 @@ func TestV1ProbeOnline(t *testing.T) {
 					Periods     []string `json:"periods"`
 					Adjustments []string `json:"adjustments"`
 				} `json:"bars"`
-				TimeShare bool `json:"timeShare"`
-				Depth     bool `json:"depth"`
+				TimeShare      bool `json:"timeShare"`
+				TimeShareRange struct {
+					MaxTradingDays int `json:"maxTradingDays"`
+				} `json:"timeShareRange"`
+				Depth bool `json:"depth"`
 			} `json:"capabilities"`
 		} `json:"data"`
 		RequestID string `json:"requestId"`
@@ -87,6 +90,9 @@ func TestV1ProbeOnline(t *testing.T) {
 	}
 	if !caps.TimeShare || caps.Depth {
 		t.Fatalf("capabilities = %#v, want timeShare true depth false", caps)
+	}
+	if caps.TimeShareRange.MaxTradingDays != v1MaxTimeShareRangeDays {
+		t.Fatalf("timeShareRange = %#v, want maxTradingDays=%d", caps.TimeShareRange, v1MaxTimeShareRangeDays)
 	}
 }
 
@@ -484,6 +490,78 @@ func TestV1TimeShareStock(t *testing.T) {
 	wantTS := time.Date(2026, 7, 24, 9, 31, 0, 0, loc).UnixMilli()
 	if item.Timestamp != wantTS || item.Price != 8.5 || item.Volume == nil || *item.Volume != 100 {
 		t.Fatalf("item = %#v, want 09:31 price 8.5 volume 100", item)
+	}
+}
+
+// 验证多日分时按最近实际交易日聚合，并为每个交易日保留独立昨收。
+func TestV1TimeShareRangeStock(t *testing.T) {
+	originalTick := domain.FetchStockHistoryTick
+	originalOpening := domain.FetchOpeningTrade
+	originalK := domain.FetchStockKLinePage
+	t.Cleanup(func() {
+		domain.FetchStockHistoryTick = originalTick
+		domain.FetchOpeningTrade = originalOpening
+		domain.FetchStockKLinePage = originalK
+	})
+	loc := time.FixedZone("CST", 8*60*60)
+	day1 := time.Date(2026, 7, 23, 15, 0, 0, 0, loc)
+	day2 := time.Date(2026, 7, 24, 15, 0, 0, 0, loc)
+	domain.FetchStockKLinePage = func(uint16, uint8, string, uint16, uint16, uint16, uint16) ([]proto.SecurityBar, error) {
+		return []proto.SecurityBar{
+			{DateTime: day2, PreClose: 8.5},
+			{DateTime: day1, PreClose: 8.4},
+		}, nil
+	}
+	domain.FetchStockHistoryTick = func(date uint32, market uint8, code string) ([]proto.HistoryMinuteTimeData, error) {
+		if market != 1 || code != "600519" {
+			t.Fatalf("history tick request = date=%d market=%d code=%s", date, market, code)
+		}
+		return []proto.HistoryMinuteTimeData{{Price: float64(date), Avg: float64(date), Vol: 100}}, nil
+	}
+	domain.FetchOpeningTrade = func(uint32, uint8, string, time.Time) (domain.OpeningTrade, bool) {
+		return domain.OpeningTrade{}, false
+	}
+
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	resp := v1Request(router, http.MethodPost, "/api/v1/market-data/timeshare/range",
+		`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"endTradingDate":"2026-07-26","days":2}`)
+
+	var body struct {
+		Data struct {
+			InstrumentID  string `json:"instrumentId"`
+			RequestedDays int    `json:"requestedDays"`
+			Days          []struct {
+				TradingDate string  `json:"tradingDate"`
+				PreClose    float64 `json:"preClose"`
+				Items       []struct {
+					Price float64 `json:"price"`
+				} `json:"items"`
+			} `json:"days"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, resp.Body.String())
+	}
+	if resp.Code != http.StatusOK || body.Data.InstrumentID != "gotdx:stock:1:600519" || body.Data.RequestedDays != 2 {
+		t.Fatalf("response = %d %#v, want successful two-day range", resp.Code, body.Data)
+	}
+	if len(body.Data.Days) != 2 || body.Data.Days[0].TradingDate != "2026-07-23" || body.Data.Days[1].TradingDate != "2026-07-24" {
+		t.Fatalf("days = %#v, want ascending trading dates", body.Data.Days)
+	}
+	if body.Data.Days[0].PreClose != 8.4 || body.Data.Days[1].PreClose != 8.5 || len(body.Data.Days[1].Items) != 1 {
+		t.Fatalf("days = %#v, want per-day preClose and points", body.Data.Days)
+	}
+}
+
+// 验证多日分时拒绝超过服务端保护上限的 days。
+func TestV1TimeShareRangeRejectsInvalidDays(t *testing.T) {
+	router := newV1TestRouter(nil, func() client.Status { return client.Status{Ready: true} })
+	for _, days := range []int{0, v1MaxTimeShareRangeDays + 1} {
+		resp := v1Request(router, http.MethodPost, "/api/v1/market-data/timeshare/range",
+			`{"sourceId":"gotdx","instrument":{"id":"gotdx:stock:1:600519","symbol":"600519","exchange":"SH","providerRef":{"market":1,"kind":"stock"}},"endTradingDate":"2026-07-24","days":`+strconv.Itoa(days)+`}`)
+		if resp.Code != http.StatusBadRequest || !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"INVALID_REQUEST"`)) {
+			t.Fatalf("days %d response = %d %s, want INVALID_REQUEST", days, resp.Code, resp.Body.String())
+		}
 	}
 }
 
